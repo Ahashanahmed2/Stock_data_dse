@@ -155,10 +155,4 @@ table_second.find('tr').each((_, row) => {
   mongoose.connection.close();
 }
 
-crone.schedule('* 21 * * *',async()=>{
-  console.log("Running Stock Market Screper")
- await fetchAndStoreStockData();
- mongoose.connection.close();
-})
-console.log("cron Job scheduled")
-
+fetchAndStoreStockData();

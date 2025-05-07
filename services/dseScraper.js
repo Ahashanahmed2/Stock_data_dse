@@ -7,7 +7,7 @@ const mongoose = require('mongoose');
 const CandleData = require('./../models/services.dseScraper');
 
 // MongoDB সংযোগ
-mongoose.connect(process.env.MONGO_ahashanahmed111_gmail__URI);
+mongoose.connect(process.env.MONGO_ahashanahmed111_gmail_URI);
 
 // ✅ মার্কেট খোলা কি না চেক করুন
 async function getMarketStatus() {

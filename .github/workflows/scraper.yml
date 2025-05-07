@@ -2,8 +2,8 @@ name: Run DSE Scraper
 
 on:
   schedule:
-    - cron: '0 15 * * *'  # 9PM BD time
-  workflow_dispatch:  # ম্যানুয়ালি চালাতে পারবেন
+    - cron: '5 * * * *'  # 9PM BD time
+  workflow_dispatch:  # ম্যানুয়ালি চালাতে পারবে
 
 jobs:
   run-scraper:
@@ -15,12 +15,12 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
-          node-version: 18
+          node-version: 23
 
       - name: Install dependencies
         run: npm install
 
       - name: Run Scraper
         env:
-          MONGO_URI: ${{ secrets.MONGO_URI }}
+          MONGO_URI: ${{ secrets.AHASHAN111 }}
         run: node services/dseScraper.js

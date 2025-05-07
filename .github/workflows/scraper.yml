@@ -22,5 +22,5 @@ jobs:
 
       - name: Run Scraper
         env:
-          MONGO_URI: ${{ secrets.AHASHAN111 }}
+          MONGO_URI: ${{ secrets.MONGO_ahashanahmed111_gmail__URI}}
         run: node services/dseScraper.js

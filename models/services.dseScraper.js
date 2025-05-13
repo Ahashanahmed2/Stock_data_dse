@@ -22,7 +22,8 @@ const CandleDataSchema = new Schema({
   change: { type: Number, default: null },
   marketCap: { type: Number, default: null },
   collectedAt: { type: Date, default: Date.now }
-});
+},
+            { upsert: true }                         );
 
 // ✅ যুক্ত করো এই লাইন
 CandleDataSchema.index({ symbol: 1, date: 1 }, { unique: true });

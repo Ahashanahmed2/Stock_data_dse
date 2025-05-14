@@ -23,4 +23,6 @@ jobs:
       - name: Run Scraper
         env:
           MONGO_URI: ${{ secrets.MONGO_URI}}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN}}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID}}
         run: node services/dseScraper.js

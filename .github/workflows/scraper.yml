@@ -2,7 +2,7 @@ name: Run DSE Scraper
 
 on:
   schedule:
-    - cron: '40 11 * * *'  # 9PM malay time
+    - cron: '0 9 * * *'  # 5PM malay time
   workflow_dispatch:  # ম্যানুয়ালি চালাতে পারবে
 
 jobs:

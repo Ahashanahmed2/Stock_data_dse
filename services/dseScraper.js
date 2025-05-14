@@ -9,6 +9,10 @@ const CandleData = require('./../models/services.dseScraper');
 // MongoDB সংযোগ
 mongoose.connect(process.env.MONGO_URI);
 
+//Telegram সংযোগ
+let TELEGRAM_TOKEN=process.env.TELEGRAM_TOKEN;
+let TELEGRAM_CHAT_ID=process.env.TELEGRAM_CHAT_ID;
+
 // ✅ মার্কেট খোলা কি না চেক করুন
 async function getMarketStatus() {
   try {
@@ -62,6 +66,13 @@ async function fetchAndStoreStockData() {
   }
 
   const symbols = await getStockSymbols();
+await axios.post(`https:api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,{
+  chat_id:TELEGRAM_CHAT_ID,
+  text:`
+  📦 Scriping Start 📦
+  📦 Total symbols: ${symbols.length}`
+})
+  
   console.log(`📦 Total symbols: ${symbols.length}`);
 
   let success = 0, failed = 0;
@@ -150,7 +161,11 @@ table_second.find('tr').each((_, row) => {
       failed++;
     }
   }
-
+await axios.post(`https:api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,{
+  chat_id:TELEGRAM_CHAT_ID,
+  text:`✅ Done. Success: ${success}, Failed: ${failed}`
+})
+  
   console.log(`✅ Done. Success: ${success}, Failed: ${failed}`);
   mongoose.connection.close();
 }

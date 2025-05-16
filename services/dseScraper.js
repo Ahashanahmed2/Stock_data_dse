@@ -134,7 +134,7 @@ table_second.find('tr').each((_, row) => {
       open = parseFloat(value);
     }
     if (key === "Market Capitalization (mn)") {
-      marketCap = parseFloat(value) * 1e6;
+      marketCap = parseFloat(value);
     }
   })});
 

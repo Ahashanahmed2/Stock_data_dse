@@ -2,7 +2,7 @@ name: Run DSE Scraper
 
 on:
   schedule:
-    - cron: '0 9 * * *'  # 5PM malay time
+    - cron: '30 10 * * *'  # 5PM malay time
   workflow_dispatch:  # ম্যানুয়ালি চালাতে পারবে
 
 jobs:
@@ -22,7 +22,7 @@ jobs:
 
       - name: Run Scraper
         env:
-          AHSAN111_URL:${{ secrets.AHSAN111_URL}}
+          AHSAN111_URL: ${{ secrets.AHSAN111_URL}}
           MONGO_URI: ${{ secrets.MONGO_URI}}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN}}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID}}

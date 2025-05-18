@@ -8,7 +8,6 @@ const CandleData = require('./../models/services.dseScraper');
 
 // MongoDB সংযোগ
 mongoose.connect(process.env.MONGO_URI);
-mongoose.connect(process.env.AHSAN111_URL);
 //Telegram সংযোগ
 let TELEGRAM_TOKEN=process.env.TELEGRAM_TOKEN;
 let TELEGRAM_CHAT_ID=process.env.TELEGRAM_CHAT_ID;

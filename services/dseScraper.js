@@ -149,7 +149,7 @@ table_second.find('tr').each((_, row) => {
         trades: ltpData.trades,
         change: ltpData.change,  
         marketCap,
-        collectedAt: new Date()
+        
       });
 
       await candle.save();

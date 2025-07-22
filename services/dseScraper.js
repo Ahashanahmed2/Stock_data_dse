@@ -55,23 +55,21 @@ async function getStockSymbols() {
   }
 }
 
-// ✅ ডেটা স্ক্র্যাপ ও সংরক্ষণ
+// ✅ DSE থেকে ডেটা স্ক্র্যাপ এবং MongoDB-তে সংরক্ষণ (ডুপ্লিকেট চেক সহ)
 async function fetchAndStoreStockData() {
   const { isMarketOpen, date } = await getMarketStatus();
-  if (!isMarketOpen) {
-    console.log('❌ Market Closed Today');
+  if (!isMarketOpen || !date) {
+    console.log('❌ Market Closed Today or Date not found');
     mongoose.connection.close();
     return;
   }
 
   const symbols = await getStockSymbols();
-await axios.post(`https:api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,{
-  chat_id:TELEGRAM_CHAT_ID,
-  text:`
-  📦 Scriping Start 📦
-  📦 Total symbols: ${symbols.length}`
-})
-  
+  await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+    chat_id: TELEGRAM_CHAT_ID,
+    text: `📦 Scriping Start 📦\n📦 Total symbols: ${symbols.length}`
+  });
+
   console.log(`📦 Total symbols: ${symbols.length}`);
 
   let success = 0, failed = 0;
@@ -81,6 +79,13 @@ await axios.post(`https:api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,{
 
   for (const symbol of symbols) {
     try {
+      // 📌 ডুপ্লিকেট চেক (symbol + date)
+      const exists = await CandleData.findOne({ symbol, date });
+      if (exists) {
+        console.log(`ℹ️ Already exists: ${symbol} on ${date}`);
+        continue;
+      }
+
       // LTP ডেটা সংগ্রহ
       let ltpData = {};
       $('table.table tbody tr').each((_, row) => {
@@ -94,11 +99,7 @@ await axios.post(`https:api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,{
             value: parseFloat($(row).find('td:nth-child(10)').text().trim().replace(/,/g, '')) || null,
             change: parseFloat($(row).find('td:nth-child(8)').text().trim().replace(/,/g, '')) || null,
             trades: parseInt($(row).find('td:nth-child(9)').text().trim().replace(/,/g, '')) || null
-           
-          }
-          // tr =>5=> td => 1 -9 => opening price
-          // tr => 7 td =>2 -14=> market capital
-          // {"_id":{"$oid":"6818b7a8227f1b426c0b28e3"},"symbol":"RECKITTBEN","date":"2025-05-04","open":null,"close":{"$numberDouble":"3500.6"},"high":{"$numberDouble":"3667.8"},"low":{"$numberDouble":"3495.3"},"volume":{"$numberInt":"3500"},"value":{"$numberDouble":"3495300000.0"},"trades":{"$numberInt":"5"},"change":{"$numberInt":"337"},"marketCap":null,"collectedAt":{"$date":{"$numberLong":"1746450344355"}},"__v":{"$numberInt":"0"}}
+          };
         }
       });
 
@@ -108,35 +109,30 @@ await axios.post(`https:api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,{
         continue;
       }
 
-      // কোম্পানি ডেটা সংগ্রহ
+      // কোম্পানির অতিরিক্ত ডেটা
       const { data: companyHtml } = await axios.get(`https://www.dsebd.org/displayCompany.php?name=${symbol}`);
       const $$ = cheerio.load(companyHtml);
-      let table = $$('table#company');
-      let table_second = $$(table).eq(1)
-let open =''|| null;
-let marketCap = '' || null;
+      let table = $$('table#company').eq(1);
 
-table_second.find('tr').each((_, row) => {
-  const $row = $$(row);
-  const ths = $row.find('th');
-  const tds = $row.find('td');
+      let open = null;
+      let marketCap = null;
 
-  ths.each((i, th) => {
-    const key = $$(th).text().trim();
-    // i ইন্ডেক্সের td নাও, সেটা হবে একই পজিশনের value
-    const raw = $$(tds[i]).text().trim().replace(/,/g, '');
-    const value = raw === '' ? null : raw;
+      table.find('tr').each((_, row) => {
+        const $row = $$(row);
+        const ths = $row.find('th');
+        const tds = $row.find('td');
 
-    //console.log('key:', key, 'value:', value);
+        ths.each((i, th) => {
+          const key = $$(th).text().trim();
+          const raw = $$(tds[i]).text().trim().replace(/,/g, '');
+          const value = raw === '' ? null : raw;
 
-    if (key === 'Opening Price') {
-      open = parseFloat(value);
-    }
-    if (key === "Market Capitalization (mn)") {
-      marketCap = parseFloat(value);
-    }
-  })});
+          if (key === 'Opening Price') open = parseFloat(value);
+          if (key === "Market Capitalization (mn)") marketCap = parseFloat(value);
+        });
+      });
 
+      // ✅ MongoDB-তে ইনসার্ট
       const candle = new CandleData({
         symbol,
         date,
@@ -147,9 +143,8 @@ table_second.find('tr').each((_, row) => {
         volume: ltpData.volume,
         value: ltpData.value,
         trades: ltpData.trades,
-        change: ltpData.change,  
-        marketCap,
-        
+        change: ltpData.change,
+        marketCap
       });
 
       await candle.save();
@@ -160,13 +155,15 @@ table_second.find('tr').each((_, row) => {
       failed++;
     }
   }
-await axios.post(`https:api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,{
-  chat_id:TELEGRAM_CHAT_ID,
-  text:`✅ Done. Success: ${success}, Failed: ${failed}`
-})
-  
+
+  // ✅ শেষে টেলিগ্রামে নোটিফিকেশন
+  await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+    chat_id: TELEGRAM_CHAT_ID,
+    text: `✅ Done. Success: ${success}, Failed: ${failed}`
+  });
+
   console.log(`✅ Done. Success: ${success}, Failed: ${failed}`);
   mongoose.connection.close();
 }
+fetchAndStoreStockData()
 
-fetchAndStoreStockData();

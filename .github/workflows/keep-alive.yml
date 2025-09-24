@@ -1,0 +1,25 @@
+name: Keep Alive Commit
+
+on:
+  schedule:
+    - cron: "0 0 1 * *"   # প্রতি মাসের ১ তারিখে 00:00 UTC তে চলবে
+  workflow_dispatch:       # চাইলে ম্যানুয়ালি চালাতে পারবেন
+
+jobs:
+  keep-alive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set git config
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Update keep-alive file
+        run: |
+          echo "Last run: $(date -u)" > commet.eml
+          git add commet.eml
+          git commit -m "chore: keep-alive $(date -u)" || echo "No changes to commit"
+          git push

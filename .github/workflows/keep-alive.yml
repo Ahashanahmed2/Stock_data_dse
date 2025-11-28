@@ -3,14 +3,20 @@ name: Keep Alive Commit
 on:
   schedule:
     - cron: "0 0 1 * *"   # প্রতি মাসের ১ তারিখে 00:00 UTC তে চলবে
-  workflow_dispatch:       # চাইলে ম্যানুয়ালি চালাতে পারবেন
+  workflow_dispatch:
+
+permissions:
+  contents: write   # github-actions bot কে push করার অনুমতি
 
 jobs:
   keep-alive:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+        with:
+          persist-credentials: true   # <-- সবচেয়ে গুরুত্বপূর্ণ
 
       - name: Set git config
         run: |

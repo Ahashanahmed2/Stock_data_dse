@@ -1,3 +1,4 @@
+// ✅ DSE থেকে ডেটা স্ক্র্যাপ এবং MongoDB-তে সংরক্ষণ (ডুপ্লিকেট চেক সহ)
 async function fetchAndStoreStockData() {
   const { isMarketOpen, date } = await getMarketStatus();
   if (!isMarketOpen || !date) {
@@ -21,7 +22,7 @@ async function fetchAndStoreStockData() {
 
   for (const symbol of symbols) {
     try {
-      // 📌 ডুপ্লিকেট চেক
+      // 📌 ডুপ্লিকেট চেক (symbol + date)
       const exists = await CandleData.findOne({ symbol, date });
       if (exists) {
         console.log(`ℹ️ Already exists: ${symbol} on ${date}`);
@@ -59,47 +60,75 @@ async function fetchAndStoreStockData() {
       let marketCap = null;
       let sector = null;
 
-      // ✅ সব টেবিল চেক করুন
+      // ✅ পদ্ধতি ১: Basic Information টেবিল খুঁজে বের করা
       $$('table').each((tableIndex, table) => {
         const $table = $$(table);
+        const tableHtml = $table.html() || '';
         
-        $table.find('tr').each((rowIndex, row) => {
-          const $row = $$(row);
-          const ths = $row.find('th');
-          const tds = $row.find('td');
-          
-          ths.each((i, th) => {
-            const key = $$(th).text().trim();
+        // Basic Information টেবিল চিহ্নিত করা
+        if (tableHtml.includes('Basic Information') || tableHtml.includes('Authorized Capital')) {
+          $table.find('tr').each((rowIndex, row) => {
+            const $row = $$(row);
+            const ths = $row.find('th');
+            const tds = $row.find('td');
             
-            if (tds.length > i) {
-              const raw = $$(tds[i]).text().trim().replace(/,/g, '');
-              const value = raw === '' ? null : raw;
+            ths.each((i, th) => {
+              const key = $$(th).text().trim();
               
-              if (key === 'Opening Price') open = parseFloat(value);
-              if (key === 'Market Capitalization (mn)') marketCap = parseFloat(value);
-              if (key === 'Sector') sector = raw;
-            }
+              if (tds.length > i) {
+                let raw = $$(tds[i]).text().trim().replace(/,/g, '');
+                
+                if (key === 'Opening Price') {
+                  // ✅ NaN এরর ফিক্স
+                  if (raw && raw !== '-' && raw !== '--' && !isNaN(parseFloat(raw))) {
+                    open = parseFloat(raw);
+                  }
+                }
+                if (key === 'Market Capitalization (mn)') {
+                  if (raw && raw !== '-' && raw !== '--' && !isNaN(parseFloat(raw))) {
+                    marketCap = parseFloat(raw);
+                  }
+                }
+                if (key === 'Sector') {
+                  sector = raw || null;
+                }
+              }
+            });
           });
-        });
+        }
       });
 
-      // ✅ ফলব্যাক পদ্ধতি
+      // ✅ পদ্ধতি ২: সরাসরি Sector খোঁজা (যদি উপরে না পাওয়া যায়)
       if (!sector) {
         $$('th').each((_, el) => {
-          if ($$(el).text().trim() === 'Sector') {
-            const nextTd = $$(el).next('td');
-            if (nextTd.length) {
-              sector = nextTd.text().trim();
+          const thText = $$(el).text().trim();
+          if (thText === 'Sector') {
+            const parentRow = $$(el).closest('tr');
+            const td = parentRow.find('td').eq($$(el).index());
+            if (td.length) {
+              sector = td.text().trim() || null;
             }
           }
         });
       }
 
+      // ✅ পদ্ধতি ৩: রেগেক্স দিয়ে Sector খোঁজা (লাস্ট রিসোর্ট)
+      if (!sector) {
+        const bodyText = $$('body').text();
+        const sectorMatch = bodyText.match(/Sector\s*:?\s*([A-Za-z\s&]+?)(?=\s{2,}|\n|$)/i);
+        if (sectorMatch && sectorMatch[1] && sectorMatch[1].length < 50) {
+          sector = sectorMatch[1].trim();
+        }
+      }
+
+      // ✅ Opening Price না পাওয়া গেলে LTP থেকে close ব্যবহার করবেন না
+      // open ফিল্ড null রাখুন
+
       // ✅ MongoDB-তে ইনসার্ট
       const candle = new CandleData({
         symbol,
         date,
-        open,
+        open, // NaN এর বদলে null থাকবে
         close: ltpData.close,
         high: ltpData.high,
         low: ltpData.low,
@@ -112,8 +141,12 @@ async function fetchAndStoreStockData() {
       });
 
       await candle.save();
-      console.log(`✅ Saved: ${symbol} | Sector: ${sector || 'N/A'}`);
+      console.log(`✅ Saved: ${symbol} | Sector: ${sector || 'N/A'} | Open: ${open || 'N/A'}`);
       success++;
+      
+      // ✅ রেট লিমিট এড়াতে ছোট ডেলে
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
     } catch (err) {
       console.warn(`⚠️ Error for ${symbol}: ${err.message}`);
       failed++;

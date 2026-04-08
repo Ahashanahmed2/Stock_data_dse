@@ -20,7 +20,8 @@ const CandleDataSchema = new Schema({
   value: { type: Number, default: null },
   trades: { type: Number, default: null },
   change: { type: Number, default: null },
-  marketCap: { type: Number, default: null }
+  marketCap: { type: Number, default: null },
+  sector: { type: String, default: null } // ✅ Sector ফিল্ড যোগ করা হলো
 },
             { upsert: true }                         );
 

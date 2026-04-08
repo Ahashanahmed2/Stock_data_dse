@@ -1,4 +1,3 @@
-
 const crone = require("node-cron")
 require('dotenv').config();
 const axios = require('axios');
@@ -116,6 +115,7 @@ async function fetchAndStoreStockData() {
 
       let open = null;
       let marketCap = null;
+      let sector = null; // ✅ Sector ভেরিয়েবল যোগ করা হলো
 
       table.find('tr').each((_, row) => {
         const $row = $$(row);
@@ -129,10 +129,11 @@ async function fetchAndStoreStockData() {
 
           if (key === 'Opening Price') open = parseFloat(value);
           if (key === "Market Capitalization (mn)") marketCap = parseFloat(value);
+          if (key === 'Sector') sector = raw; // ✅ Sector ডেটা সংগ্রহ
         });
       });
 
-      // ✅ MongoDB-তে ইনসার্ট
+      // ✅ MongoDB-তে ইনসার্ট (sector সহ)
       const candle = new CandleData({
         symbol,
         date,
@@ -144,11 +145,12 @@ async function fetchAndStoreStockData() {
         value: ltpData.value,
         trades: ltpData.trades,
         change: ltpData.change,
-        marketCap
+        marketCap,
+        sector // ✅ Sector ফিল্ড যোগ করা হলো
       });
 
       await candle.save();
-      console.log(`✅ Saved: ${symbol}`);
+      console.log(`✅ Saved: ${symbol} (Sector: ${sector || 'N/A'})`);
       success++;
     } catch (err) {
       console.warn(`⚠️ Error for ${symbol}: ${err.message}`);
@@ -166,4 +168,3 @@ async function fetchAndStoreStockData() {
   mongoose.connection.close();
 }
 fetchAndStoreStockData()
-

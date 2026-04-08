@@ -1,60 +1,3 @@
-const crone = require("node-cron")
-require('dotenv').config();
-const axios = require('axios');
-const cheerio = require('cheerio');
-const mongoose = require('mongoose');
-const CandleData = require('./../models/services.dseScraper');
-
-// MongoDB সংযোগ
-mongoose.connect(process.env.MONGO_URI);
-//Telegram সংযোগ
-let TELEGRAM_TOKEN=process.env.TELEGRAM_TOKEN;
-let TELEGRAM_CHAT_ID=process.env.TELEGRAM_CHAT_ID;
-
-// ✅ মার্কেট খোলা কি না চেক করুন
-async function getMarketStatus() {
-  try {
-    const { data: html } = await axios.get('https://www.dsebd.org/index.php');
-    const $ = cheerio.load(html);
-    const updateText = $('h2.Bodyheading').first().text().trim();
-
-    const match = updateText.match(/Last update on (\w+ \d{2}, \d{4}) at/);
-    if (match && match[1]) {
-      const updateDate = new Date(match[1]);
-      const today = new Date();
-      const isMarketOpen = updateDate.toDateString() === today.toDateString();
-      return {
-        isMarketOpen,
-        date: isMarketOpen ? updateDate.toISOString().split('T')[0] : null
-      };
-    }
-    return { isMarketOpen: false, date: null };
-  } catch (err) {
-    console.error('❌ Market status error:', err.message);
-    return { isMarketOpen: false, date: null };
-  }
-}
-let count = 1
-// ✅ স্টক সিম্বল সংগ্রহ করুন
-async function getStockSymbols() {
-  try {
-    const { data: html } = await axios.get('https://www.dsebd.org/latest_share_price_scroll_by_ltp.php');
-    const $ = cheerio.load(html);
-    const symbols = [];
-
-    $('table.table tbody tr').each((_, row) => {
-      const symbol = $(row).find('td:nth-child(2) a').text().trim();
-      if (symbol) symbols.push(symbol);
-    });
-
-    return symbols;
-  } catch (err) {
-    console.error('❌ Symbols fetch error:', err.message);
-    return [];
-  }
-}
-
-// ✅ DSE থেকে ডেটা স্ক্র্যাপ এবং MongoDB-তে সংরক্ষণ (ডুপ্লিকেট চেক সহ)
 async function fetchAndStoreStockData() {
   const { isMarketOpen, date } = await getMarketStatus();
   if (!isMarketOpen || !date) {
@@ -78,7 +21,7 @@ async function fetchAndStoreStockData() {
 
   for (const symbol of symbols) {
     try {
-      // 📌 ডুপ্লিকেট চেক (symbol + date)
+      // 📌 ডুপ্লিকেট চেক
       const exists = await CandleData.findOne({ symbol, date });
       if (exists) {
         console.log(`ℹ️ Already exists: ${symbol} on ${date}`);
@@ -111,29 +54,48 @@ async function fetchAndStoreStockData() {
       // কোম্পানির অতিরিক্ত ডেটা
       const { data: companyHtml } = await axios.get(`https://www.dsebd.org/displayCompany.php?name=${symbol}`);
       const $$ = cheerio.load(companyHtml);
-      let table = $$('table#company').eq(1);
 
       let open = null;
       let marketCap = null;
-      let sector = null; // ✅ Sector ভেরিয়েবল যোগ করা হলো
+      let sector = null;
 
-      table.find('tr').each((_, row) => {
-        const $row = $$(row);
-        const ths = $row.find('th');
-        const tds = $row.find('td');
-
-        ths.each((i, th) => {
-          const key = $$(th).text().trim();
-          const raw = $$(tds[i]).text().trim().replace(/,/g, '');
-          const value = raw === '' ? null : raw;
-
-          if (key === 'Opening Price') open = parseFloat(value);
-          if (key === "Market Capitalization (mn)") marketCap = parseFloat(value);
-          if (key === 'Sector') sector = raw; // ✅ Sector ডেটা সংগ্রহ
+      // ✅ সব টেবিল চেক করুন
+      $$('table').each((tableIndex, table) => {
+        const $table = $$(table);
+        
+        $table.find('tr').each((rowIndex, row) => {
+          const $row = $$(row);
+          const ths = $row.find('th');
+          const tds = $row.find('td');
+          
+          ths.each((i, th) => {
+            const key = $$(th).text().trim();
+            
+            if (tds.length > i) {
+              const raw = $$(tds[i]).text().trim().replace(/,/g, '');
+              const value = raw === '' ? null : raw;
+              
+              if (key === 'Opening Price') open = parseFloat(value);
+              if (key === 'Market Capitalization (mn)') marketCap = parseFloat(value);
+              if (key === 'Sector') sector = raw;
+            }
+          });
         });
       });
 
-      // ✅ MongoDB-তে ইনসার্ট (sector সহ)
+      // ✅ ফলব্যাক পদ্ধতি
+      if (!sector) {
+        $$('th').each((_, el) => {
+          if ($$(el).text().trim() === 'Sector') {
+            const nextTd = $$(el).next('td');
+            if (nextTd.length) {
+              sector = nextTd.text().trim();
+            }
+          }
+        });
+      }
+
+      // ✅ MongoDB-তে ইনসার্ট
       const candle = new CandleData({
         symbol,
         date,
@@ -146,11 +108,11 @@ async function fetchAndStoreStockData() {
         trades: ltpData.trades,
         change: ltpData.change,
         marketCap,
-        sector // ✅ Sector ফিল্ড যোগ করা হলো
+        sector
       });
 
       await candle.save();
-      console.log(`✅ Saved: ${symbol} (Sector: ${sector || 'N/A'})`);
+      console.log(`✅ Saved: ${symbol} | Sector: ${sector || 'N/A'}`);
       success++;
     } catch (err) {
       console.warn(`⚠️ Error for ${symbol}: ${err.message}`);
@@ -167,4 +129,3 @@ async function fetchAndStoreStockData() {
   console.log(`✅ Done. Success: ${success}, Failed: ${failed}`);
   mongoose.connection.close();
 }
-fetchAndStoreStockData()

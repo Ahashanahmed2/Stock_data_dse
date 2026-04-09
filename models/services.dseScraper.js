@@ -21,11 +21,10 @@ const CandleDataSchema = new Schema({
   trades: { type: Number, default: null },
   change: { type: Number, default: null },
   marketCap: { type: Number, default: null },
-  sector: { type: String, default: null } // ✅ Sector ফিল্ড যোগ করা হলো
-},
-            { upsert: true }                         );
+  sector: { type: String, default: null }  // ✅ Sector ফিল্ড যোগ করা হলো
+});
 
-// ✅ যুক্ত করো এই লাইন
+// ✅ Unique Index (symbol + date)
 CandleDataSchema.index({ symbol: 1, date: 1 }, { unique: true });
 
 module.exports = mongoose.model('CandleData', CandleDataSchema);

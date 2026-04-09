@@ -15,7 +15,7 @@ const CandleData = require('../models/CandleData'); // ✅ আপনার ফ�
 // =========================================================
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
-const MONGO_URL = process.env.MONGO_URl;
+const MONGO_URL = process.env.MONGO_URI;
 
 // =========================================================
 // হেল্পার ফাংশন: রিট্রাই লজিক (নেটওয়ার্ক এরর সহনশীল)

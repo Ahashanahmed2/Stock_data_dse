@@ -3,7 +3,7 @@ require('dotenv').config();
 const axios = require('axios');
 const cheerio = require('cheerio');
 const mongoose = require('mongoose');
-const CandleData = require('./../models/CandleData');
+const CandleData = require('./../models/CandleData);
 
 // MongoDB সংযোগ
 mongoose.connect(process.env.MONGO_URI);
@@ -115,15 +115,35 @@ async function fetchAndStoreStockData() {
 
       let open = null;
       let marketCap = null;
-      let sector = null;  // ✅ Sector ভেরিয়েবল যোগ করা হয়েছে
+      let sector = null;
 
-      // --- ✅ সেক্টর পার্সিং লজিক (নতুন যোগ করা হয়েছে) ---
-      // DSE-র কোম্পানি পৃষ্ঠায় Sector তথ্যটি #section উপাদানের মধ্যে থাকে
-      const sectorElement = $$('#section');
-      if (sectorElement.length) {
-        // "Sector: Pharmaceuticals & Chemicals" এরকম ফরম্যাটে থাকে
-        const sectorText = sectorElement.text().trim();
-        const match = sectorText.match(/Sector\s*:\s*([A-Za-z\s&]+)/i);
+      // --- ✅ সঠিক সেক্টর পার্সিং লজিক (নতুন যোগ করা হয়েছে) ---
+      // Sector "Basic Information" টেবিলের মধ্যে থাকে
+      const basicInfoTable = $$('table').filter((_, el) => {
+        return $$(el).text().includes('Basic Information');
+      }).first();
+      
+      if (basicInfoTable.length) {
+        basicInfoTable.find('tr').each((_, row) => {
+          const $row = $$(row);
+          const cells = $row.find('td');
+          
+          // যদি দুইটি সেল থাকে (key-value pair)
+          if (cells.length === 2) {
+            const key = $$(cells[0]).text().trim();
+            const value = $$(cells[1]).text().trim();
+            
+            if (key === 'Sector') {
+              sector = value || null;
+            }
+          }
+        });
+      }
+      
+      // ফলব্যাক: পুরো পৃষ্ঠা থেকে রেগেক্স দিয়ে খোঁজা
+      if (!sector) {
+        const bodyText = $$('body').text();
+        const match = bodyText.match(/Sector\s+([A-Za-z\s&]+?)(?=\s{2,}|\n|$)/i);
         if (match && match[1]) {
           sector = match[1].trim();
         }
@@ -142,7 +162,6 @@ async function fetchAndStoreStockData() {
 
           if (key === 'Opening Price') open = parseFloat(value);
           if (key === "Market Capitalization (mn)") marketCap = parseFloat(value);
-          // ⚠️ আগের সেক্টর চেকটি সরানো হয়েছে কারণ তা কাজ করছিল না
         });
       });
 
@@ -159,7 +178,7 @@ async function fetchAndStoreStockData() {
         trades: ltpData.trades,
         change: ltpData.change,
         marketCap,
-        sector  // ✅ Sector যোগ করা হয়েছে
+        sector
       });
 
       await candle.save();

@@ -3,7 +3,7 @@ require('dotenv').config();
 const axios = require('axios');
 const cheerio = require('cheerio');
 const mongoose = require('mongoose');
-const CandleData = require('./../models/dseScraper');
+const CandleData = require('./../models/CandleData);
 
 // MongoDB সংযোগ
 mongoose.connect(process.env.MONGO_URI);

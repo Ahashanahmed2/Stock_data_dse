@@ -117,42 +117,86 @@ async function fetchAndStoreStockData() {
       let marketCap = null;
       let sector = null;
 
-      // --- ✅ ২-কলাম টেবিলের জন্য সঠিক সেক্টর পার্সিং ---
-      $$('table').each((_, tbl) => {
-        const $tbl = $$(tbl);
-        const tblText = $tbl.text();
-        
-        // "Basic Information" এবং "Sector" আছে এমন টেবিল
-        if (tblText.includes('Basic Information') && tblText.includes('Sector')) {
-          $tbl.find('tr').each((_, row) => {
-            const cells = $$(row).find('td');
-            
-            // ২টি সেল থাকলে (key, value)
-            if (cells.length === 2) {
-              const key = $$(cells[0]).text().trim();
-              const value = $$(cells[1]).text().trim();
-              
-              if (key === 'Sector' && value && value.length < 50) {
-                sector = value;
-                return false; // break inner loop
-              }
+      // --- ✅ চূড়ান্ত সেক্টর পার্সিং (সকল সম্ভাব্য পদ্ধতি) ---
+      
+      // পদ্ধতি ১: যেকোনো টেবিল সেলে "Sector" টেক্সট খুঁজে পরবর্তী সেলের মান নেওয়া
+      $$('td, th').each((_, el) => {
+        const text = $$(el).text().trim();
+        if (text.match(/^Sector\s*$/i)) {
+          const nextCell = $$(el).next('td');
+          if (nextCell.length) {
+            const value = nextCell.text().trim();
+            if (value && value.length > 2 && value.length < 50 && !value.includes('Company List')) {
+              sector = value;
+              return false;
             }
-          });
-          
-          if (sector) return false; // break outer loop
+          }
         }
       });
-      
-      // ফলব্যাক: পুরো পৃষ্ঠা থেকে রেগেক্স দিয়ে খোঁজা
+      if (sector) console.log(`   ✅ Method 1 found: ${sector}`);
+
+      // পদ্ধতি ২: "Basic Information" টেবিলের মধ্যে ২-কলাম ফরম্যাটে খোঁজা
       if (!sector) {
-        const bodyText = $$('body').text();
-        const match = bodyText.match(/Sector\s+([A-Za-z\s&]+)/i);
-        if (match && match[1] && match[1].length < 50) {
-          sector = match[1].trim();
+        $$('table').each((_, tbl) => {
+          const $tbl = $$(tbl);
+          if ($tbl.text().includes('Basic Information')) {
+            $tbl.find('tr').each((_, row) => {
+              const cells = $$(row).find('td');
+              if (cells.length === 2) {
+                const key = $$(cells[0]).text().trim();
+                if (key === 'Sector') {
+                  const value = $$(cells[1]).text().trim();
+                  if (value && value.length > 2) {
+                    sector = value;
+                    return false;
+                  }
+                }
+              }
+            });
+          }
+          if (sector) return false;
+        });
+      }
+      if (sector) console.log(`   ✅ Method 2 found: ${sector}`);
+
+      // পদ্ধতি ৩: "Basic Information" টেবিলের মধ্যে ৪-কলাম ফরম্যাটে খোঁজা
+      if (!sector) {
+        $$('table').each((_, tbl) => {
+          const $tbl = $$(tbl);
+          if ($tbl.text().includes('Basic Information')) {
+            $tbl.find('tr').each((_, row) => {
+              const cells = $$(row).find('td');
+              if (cells.length >= 4) {
+                const key1 = $$(cells[0]).text().trim();
+                const value1 = $$(cells[1]).text().trim();
+                const key2 = $$(cells[2]).text().trim();
+                const value2 = $$(cells[3]).text().trim();
+                
+                if (key1 === 'Sector' && value1) sector = value1;
+                if (key2 === 'Sector' && value2) sector = value2;
+                if (sector) return false;
+              }
+            });
+          }
+          if (sector) return false;
+        });
+      }
+      if (sector) console.log(`   ✅ Method 3 found: ${sector}`);
+
+      // পদ্ধতি ৪: পৃষ্ঠার সমস্ত টেক্সট থেকে রেগেক্সের মাধ্যমে খোঁজা
+      if (!sector) {
+        const bodyText = $$('body').text().replace(/\s+/g, ' ');
+        const match = bodyText.match(/Sector\s*:?\s*([A-Za-z\s&]+?)(?=\s{2,}|\n|Sector|$)/i);
+        if (match && match[1]) {
+          let possibleSector = match[1].trim();
+          if (possibleSector.length > 2 && possibleSector.length < 50 && !possibleSector.includes('Company List')) {
+            sector = possibleSector;
+          }
         }
       }
-      
-      console.log(`   🔍 Sector for ${symbol}: ${sector || 'NOT FOUND'}`);
+      if (sector) console.log(`   ✅ Method 4 found: ${sector}`);
+
+      console.log(`   🔍 Final Sector for ${symbol}: ${sector || 'NOT FOUND'}`);
       // --- সেক্টর পার্সিং শেষ ---
 
       table.find('tr').each((_, row) => {

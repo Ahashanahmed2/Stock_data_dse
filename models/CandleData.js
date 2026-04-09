@@ -1,4 +1,4 @@
-
+//#অটিজিনাল
 const mongoose = require('mongoose');
 const Schema = mongoose.Schema;
 
@@ -22,10 +22,11 @@ const CandleDataSchema = new Schema({
   trades: { type: Number, default: null },
   change: { type: Number, default: null },
   marketCap: { type: Number, default: null },
-  sector: { type: String, default: null }  // ✅ Sector ফিল্ড যোগ করা হলো
-});
+  sector: { type: String, default: null }  // ✅ শুধু এই লাইনটি যোগ করা হয়েছে
+},
+            { upsert: true }                         );
 
-// ✅ Unique Index (symbol + date)
+// ✅ যুক্ত করো এই লাইন
 CandleDataSchema.index({ symbol: 1, date: 1 }, { unique: true });
 
 module.exports = mongoose.model('CandleData', CandleDataSchema);

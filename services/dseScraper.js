@@ -1,3 +1,60 @@
+
+const crone = require("node-cron")
+require('dotenv').config();
+const axios = require('axios');
+const cheerio = require('cheerio');
+const mongoose = require('mongoose');
+const CandleData = require('./../models/services.dseScraper');
+
+// MongoDB সংযোগ
+mongoose.connect(process.env.MONGO_URI);
+//Telegram সংযোগ
+let TELEGRAM_TOKEN=process.env.TELEGRAM_TOKEN;
+let TELEGRAM_CHAT_ID=process.env.TELEGRAM_CHAT_ID;
+
+// ✅ মার্কেট খোলা কি না চেক করুন
+async function getMarketStatus() {
+  try {
+    const { data: html } = await axios.get('https://www.dsebd.org/index.php');
+    const $ = cheerio.load(html);
+    const updateText = $('h2.Bodyheading').first().text().trim();
+
+    const match = updateText.match(/Last update on (\w+ \d{2}, \d{4}) at/);
+    if (match && match[1]) {
+      const updateDate = new Date(match[1]);
+      const today = new Date();
+      const isMarketOpen = updateDate.toDateString() === today.toDateString();
+      return {
+        isMarketOpen,
+        date: isMarketOpen ? updateDate.toISOString().split('T')[0] : null
+      };
+    }
+    return { isMarketOpen: false, date: null };
+  } catch (err) {
+    console.error('❌ Market status error:', err.message);
+    return { isMarketOpen: false, date: null };
+  }
+}
+let count = 1
+// ✅ স্টক সিম্বল সংগ্রহ করুন
+async function getStockSymbols() {
+  try {
+    const { data: html } = await axios.get('https://www.dsebd.org/latest_share_price_scroll_by_ltp.php');
+    const $ = cheerio.load(html);
+    const symbols = [];
+
+    $('table.table tbody tr').each((_, row) => {
+      const symbol = $(row).find('td:nth-child(2) a').text().trim();
+      if (symbol) symbols.push(symbol);
+    });
+
+    return symbols;
+  } catch (err) {
+    console.error('❌ Symbols fetch error:', err.message);
+    return [];
+  }
+}
+
 // ✅ DSE থেকে ডেটা স্ক্র্যাপ এবং MongoDB-তে সংরক্ষণ (ডুপ্লিকেট চেক সহ)
 async function fetchAndStoreStockData() {
   const { isMarketOpen, date } = await getMarketStatus();
@@ -55,80 +112,31 @@ async function fetchAndStoreStockData() {
       // কোম্পানির অতিরিক্ত ডেটা
       const { data: companyHtml } = await axios.get(`https://www.dsebd.org/displayCompany.php?name=${symbol}`);
       const $$ = cheerio.load(companyHtml);
+      let table = $$('table#company').eq(1);
 
       let open = null;
       let marketCap = null;
-      let sector = null;
 
-      // ✅ পদ্ধতি ১: Basic Information টেবিল খুঁজে বের করা
-      $$('table').each((tableIndex, table) => {
-        const $table = $$(table);
-        const tableHtml = $table.html() || '';
-        
-        // Basic Information টেবিল চিহ্নিত করা
-        if (tableHtml.includes('Basic Information') || tableHtml.includes('Authorized Capital')) {
-          $table.find('tr').each((rowIndex, row) => {
-            const $row = $$(row);
-            const ths = $row.find('th');
-            const tds = $row.find('td');
-            
-            ths.each((i, th) => {
-              const key = $$(th).text().trim();
-              
-              if (tds.length > i) {
-                let raw = $$(tds[i]).text().trim().replace(/,/g, '');
-                
-                if (key === 'Opening Price') {
-                  // ✅ NaN এরর ফিক্স
-                  if (raw && raw !== '-' && raw !== '--' && !isNaN(parseFloat(raw))) {
-                    open = parseFloat(raw);
-                  }
-                }
-                if (key === 'Market Capitalization (mn)') {
-                  if (raw && raw !== '-' && raw !== '--' && !isNaN(parseFloat(raw))) {
-                    marketCap = parseFloat(raw);
-                  }
-                }
-                if (key === 'Sector') {
-                  sector = raw || null;
-                }
-              }
-            });
-          });
-        }
-      });
+      table.find('tr').each((_, row) => {
+        const $row = $$(row);
+        const ths = $row.find('th');
+        const tds = $row.find('td');
 
-      // ✅ পদ্ধতি ২: সরাসরি Sector খোঁজা (যদি উপরে না পাওয়া যায়)
-      if (!sector) {
-        $$('th').each((_, el) => {
-          const thText = $$(el).text().trim();
-          if (thText === 'Sector') {
-            const parentRow = $$(el).closest('tr');
-            const td = parentRow.find('td').eq($$(el).index());
-            if (td.length) {
-              sector = td.text().trim() || null;
-            }
-          }
+        ths.each((i, th) => {
+          const key = $$(th).text().trim();
+          const raw = $$(tds[i]).text().trim().replace(/,/g, '');
+          const value = raw === '' ? null : raw;
+
+          if (key === 'Opening Price') open = parseFloat(value);
+          if (key === "Market Capitalization (mn)") marketCap = parseFloat(value);
         });
-      }
-
-      // ✅ পদ্ধতি ৩: রেগেক্স দিয়ে Sector খোঁজা (লাস্ট রিসোর্ট)
-      if (!sector) {
-        const bodyText = $$('body').text();
-        const sectorMatch = bodyText.match(/Sector\s*:?\s*([A-Za-z\s&]+?)(?=\s{2,}|\n|$)/i);
-        if (sectorMatch && sectorMatch[1] && sectorMatch[1].length < 50) {
-          sector = sectorMatch[1].trim();
-        }
-      }
-
-      // ✅ Opening Price না পাওয়া গেলে LTP থেকে close ব্যবহার করবেন না
-      // open ফিল্ড null রাখুন
+      });
 
       // ✅ MongoDB-তে ইনসার্ট
       const candle = new CandleData({
         symbol,
         date,
-        open, // NaN এর বদলে null থাকবে
+        open,
         close: ltpData.close,
         high: ltpData.high,
         low: ltpData.low,
@@ -136,17 +144,12 @@ async function fetchAndStoreStockData() {
         value: ltpData.value,
         trades: ltpData.trades,
         change: ltpData.change,
-        marketCap,
-        sector
+        marketCap
       });
 
       await candle.save();
-      console.log(`✅ Saved: ${symbol} | Sector: ${sector || 'N/A'} | Open: ${open || 'N/A'}`);
+      console.log(`✅ Saved: ${symbol}`);
       success++;
-      
-      // ✅ রেট লিমিট এড়াতে ছোট ডেলে
-      await new Promise(resolve => setTimeout(resolve, 100));
-      
     } catch (err) {
       console.warn(`⚠️ Error for ${symbol}: ${err.message}`);
       failed++;
@@ -162,3 +165,4 @@ async function fetchAndStoreStockData() {
   console.log(`✅ Done. Success: ${success}, Failed: ${failed}`);
   mongoose.connection.close();
 }
+fetchAndStoreStockData()

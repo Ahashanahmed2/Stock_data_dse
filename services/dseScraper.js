@@ -117,8 +117,7 @@ async function fetchAndStoreStockData() {
       let marketCap = null;
       let sector = null;
 
-      // --- ✅ সঠিক সেক্টর পার্সিং লজিক (নতুন যোগ করা হয়েছে) ---
-      // Sector "Basic Information" টেবিলের মধ্যে থাকে
+      // --- ✅ ৪-কলাম টেবিলের জন্য সঠিক সেক্টর পার্সিং ---
       const basicInfoTable = $$('table').filter((_, el) => {
         return $$(el).text().includes('Basic Information');
       }).first();
@@ -128,14 +127,21 @@ async function fetchAndStoreStockData() {
           const $row = $$(row);
           const cells = $row.find('td');
           
-          // যদি দুইটি সেল থাকে (key-value pair)
-          if (cells.length === 2) {
+          // ৪টি সেল থাকলে (key1, value1, key2, value2)
+          if (cells.length >= 4) {
+            const key1 = $$(cells[0]).text().trim();
+            const value1 = $$(cells[1]).text().trim();
+            const key2 = $$(cells[2]).text().trim();
+            const value2 = $$(cells[3]).text().trim();
+            
+            if (key1 === 'Sector') sector = value1 || null;
+            if (key2 === 'Sector') sector = value2 || null;
+          }
+          // ২টি সেল থাকলে (key, value)
+          else if (cells.length === 2) {
             const key = $$(cells[0]).text().trim();
             const value = $$(cells[1]).text().trim();
-            
-            if (key === 'Sector') {
-              sector = value || null;
-            }
+            if (key === 'Sector') sector = value || null;
           }
         });
       }
@@ -143,12 +149,12 @@ async function fetchAndStoreStockData() {
       // ফলব্যাক: পুরো পৃষ্ঠা থেকে রেগেক্স দিয়ে খোঁজা
       if (!sector) {
         const bodyText = $$('body').text();
-        const match = bodyText.match(/Sector\s+([A-Za-z\s&]+?)(?=\s{2,}|\n|$)/i);
-        if (match && match[1]) {
+        const match = bodyText.match(/Sector\s+([A-Za-z\s&]+?)(?=\s{2,}|\n|Sector|$)/i);
+        if (match && match[1] && !match[1].includes('wise Company List')) {
           sector = match[1].trim();
         }
       }
-      // --- সেক্টর পার্সিং লজিক শেষ ---
+      // --- সেক্টর পার্সিং শেষ ---
 
       table.find('tr').each((_, row) => {
         const $row = $$(row);

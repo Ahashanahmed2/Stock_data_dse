@@ -117,43 +117,42 @@ async function fetchAndStoreStockData() {
       let marketCap = null;
       let sector = null;
 
-      // --- ✅ ৪-কলাম টেবিলের জন্য সঠিক সেক্টর পার্সিং ---
-      const basicInfoTable = $$('table').filter((_, el) => {
-        return $$(el).text().includes('Basic Information');
-      }).first();
-      
-      if (basicInfoTable.length) {
-        basicInfoTable.find('tr').each((_, row) => {
-          const $row = $$(row);
-          const cells = $row.find('td');
-          
-          // ৪টি সেল থাকলে (key1, value1, key2, value2)
-          if (cells.length >= 4) {
-            const key1 = $$(cells[0]).text().trim();
-            const value1 = $$(cells[1]).text().trim();
-            const key2 = $$(cells[2]).text().trim();
-            const value2 = $$(cells[3]).text().trim();
+      // --- ✅ ২-কলাম টেবিলের জন্য সঠিক সেক্টর পার্সিং ---
+      $$('table').each((_, tbl) => {
+        const $tbl = $$(tbl);
+        const tblText = $tbl.text();
+        
+        // "Basic Information" এবং "Sector" আছে এমন টেবিল
+        if (tblText.includes('Basic Information') && tblText.includes('Sector')) {
+          $tbl.find('tr').each((_, row) => {
+            const cells = $$(row).find('td');
             
-            if (key1 === 'Sector') sector = value1 || null;
-            if (key2 === 'Sector') sector = value2 || null;
-          }
-          // ২টি সেল থাকলে (key, value)
-          else if (cells.length === 2) {
-            const key = $$(cells[0]).text().trim();
-            const value = $$(cells[1]).text().trim();
-            if (key === 'Sector') sector = value || null;
-          }
-        });
-      }
+            // ২টি সেল থাকলে (key, value)
+            if (cells.length === 2) {
+              const key = $$(cells[0]).text().trim();
+              const value = $$(cells[1]).text().trim();
+              
+              if (key === 'Sector' && value && value.length < 50) {
+                sector = value;
+                return false; // break inner loop
+              }
+            }
+          });
+          
+          if (sector) return false; // break outer loop
+        }
+      });
       
       // ফলব্যাক: পুরো পৃষ্ঠা থেকে রেগেক্স দিয়ে খোঁজা
       if (!sector) {
         const bodyText = $$('body').text();
-        const match = bodyText.match(/Sector\s+([A-Za-z\s&]+?)(?=\s{2,}|\n|Sector|$)/i);
-        if (match && match[1] && !match[1].includes('wise Company List')) {
+        const match = bodyText.match(/Sector\s+([A-Za-z\s&]+)/i);
+        if (match && match[1] && match[1].length < 50) {
           sector = match[1].trim();
         }
       }
+      
+      console.log(`   🔍 Sector for ${symbol}: ${sector || 'NOT FOUND'}`);
       // --- সেক্টর পার্সিং শেষ ---
 
       table.find('tr').each((_, row) => {

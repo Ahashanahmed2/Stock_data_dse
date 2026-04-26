@@ -118,7 +118,7 @@ async function fetchAndStoreStockData() {
       let sector = null;
 
       // --- ✅ চূড়ান্ত সেক্টর পার্সিং (সকল সম্ভাব্য পদ্ধতি) ---
-      
+
       // পদ্ধতি ১: যেকোনো টেবিল সেলে "Sector" টেক্সট খুঁজে পরবর্তী সেলের মান নেওয়া
       $$('td, th').each((_, el) => {
         const text = $$(el).text().trim();
@@ -126,7 +126,7 @@ async function fetchAndStoreStockData() {
           const nextCell = $$(el).next('td');
           if (nextCell.length) {
             const value = nextCell.text().trim();
-            if (value && value.length > 2 && value.length < 50 && !value.includes('Company List')) {
+            if (value && value.length > 2 && value.length < 100 && !value.includes('Company List')) {
               sector = value;
               return false;
             }
@@ -146,7 +146,7 @@ async function fetchAndStoreStockData() {
                 const key = $$(cells[0]).text().trim();
                 if (key === 'Sector') {
                   const value = $$(cells[1]).text().trim();
-                  if (value && value.length > 2) {
+                  if (value && value.length > 2 && value.length < 100) {
                     sector = value;
                     return false;
                   }
@@ -171,9 +171,9 @@ async function fetchAndStoreStockData() {
                 const value1 = $$(cells[1]).text().trim();
                 const key2 = $$(cells[2]).text().trim();
                 const value2 = $$(cells[3]).text().trim();
-                
-                if (key1 === 'Sector' && value1) sector = value1;
-                if (key2 === 'Sector' && value2) sector = value2;
+
+                if (key1 === 'Sector' && value1 && value1.length < 100) sector = value1;
+                if (key2 === 'Sector' && value2 && value2.length < 100) sector = value2;
                 if (sector) return false;
               }
             });
@@ -183,18 +183,65 @@ async function fetchAndStoreStockData() {
       }
       if (sector) console.log(`   ✅ Method 3 found: ${sector}`);
 
-      // পদ্ধতি ৪: পৃষ্ঠার সমস্ত টেক্সট থেকে রেগেক্সের মাধ্যমে খোঁজা
+      // পদ্ধতি ৪: "Sector:" লেবেল খুঁজে সম্পূর্ণ ভ্যালু নেওয়া (ফিক্সড রেগেক্স)
       if (!sector) {
-        const bodyText = $$('body').text().replace(/\s+/g, ' ');
-        const match = bodyText.match(/Sector\s*:?\s*([A-Za-z\s&]+?)(?=\s{2,}|\n|Sector|$)/i);
-        if (match && match[1]) {
-          let possibleSector = match[1].trim();
-          if (possibleSector.length > 2 && possibleSector.length < 50 && !possibleSector.includes('Company List')) {
-            sector = possibleSector;
+        const bodyText = $$('body').text();
+        const sectorLabelRegex = /Sector\s*:\s*/i;
+        let sectorMatch = bodyText.match(sectorLabelRegex);
+        
+        if (sectorMatch) {
+          const startIndex = sectorMatch.index + sectorMatch[0].length;
+          const remainingText = bodyText.substring(startIndex);
+          // Improved regex to capture full sector name including special characters
+          const sectorValueMatch = remainingText.match(/^([A-Za-z0-9\s&()\-.,]+?)(?=\s{2,}|\n|Sector|[A-Z][a-z]+\s*:|$)/);
+          
+          if (sectorValueMatch && sectorValueMatch[1]) {
+            let possibleSector = sectorValueMatch[1].trim();
+            if (possibleSector.length > 2 && possibleSector.length < 100 && !possibleSector.includes('Company List')) {
+              sector = possibleSector;
+            }
           }
         }
       }
       if (sector) console.log(`   ✅ Method 4 found: ${sector}`);
+
+      // পদ্ধতি ৫: Bond সেক্টরের জন্য স্পেশাল চেক
+      if (!sector) {
+        const bodyText = $$('body').text();
+        const bondPatterns = [
+          /Sector\s*:?\s*(Corporate\s*Bond)/i,
+          /Sector\s*:?\s*(Govt\.?\s*Bond)/i,
+          /Sector\s*:?\s*(Treasury\s*Bond)/i,
+          /Sector\s*:?\s*([A-Za-z\s]*Bond[A-Za-z\s]*)/i,
+          /Sector\s*:?\s*([A-Za-z\s]*Debenture[A-Za-z\s]*)/i
+        ];
+        
+        for (const pattern of bondPatterns) {
+          const match = bodyText.match(pattern);
+          if (match && match[1]) {
+            let bondSector = match[1].trim();
+            if (bondSector.length > 2 && bondSector.length < 100) {
+              sector = bondSector;
+              break;
+            }
+          }
+        }
+      }
+      if (sector) console.log(`   ✅ Method 5 (Bond check) found: ${sector}`);
+
+      // পদ্ধতি ৬: HTML স্ট্রাকচার থেকে সরাসরি খোঁজা (সর্বশেষ চেষ্টা)
+      if (!sector) {
+        const htmlText = $$.html();
+        const sectorPattern = />Sector\s*:?\s*<\/(?:th|td)>\s*<td[^>]*>([^<]+)<\/td>/i;
+        const match = htmlText.match(sectorPattern);
+        if (match && match[1]) {
+          let value = match[1].trim();
+          if (value && value.length > 2 && value.length < 100) {
+            sector = value;
+          }
+        }
+      }
+      if (sector) console.log(`   ✅ Method 6 (HTML structure) found: ${sector}`);
 
       console.log(`   🔍 Final Sector for ${symbol}: ${sector || 'NOT FOUND'}`);
       // --- সেক্টর পার্সিং শেষ ---

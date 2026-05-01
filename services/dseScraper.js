@@ -300,6 +300,8 @@ fetchAndStoreStockData() */
 //উপরের কোড মূল কোড
 
 
+
+
 const crone = require("node-cron")
 require('dotenv').config();
 const axios = require('axios');
@@ -417,7 +419,7 @@ async function fetchAndStoreStockData() {
 
       let open = null;
       let marketCap = null;
-      let freeFloatMarketCap = null;  // ✅ নতুন
+      let freeFloatMarketCap = null;  // ✅ NEW: Free Float Market Cap
       let sector = null;
 
       // --- ✅ চূড়ান্ত সেক্টর পার্সিং (সকল সম্ভাব্য পদ্ধতি) ---
@@ -486,7 +488,7 @@ async function fetchAndStoreStockData() {
       }
       if (sector) console.log(`   ✅ Method 3 found: ${sector}`);
 
-      // পদ্ধতি ৪: "Sector:" লেবেল খুঁজে সম্পূর্ণ ভ্যালু নেওয়া (ফিক্সড রেগেক্স)
+      // পদ্ধতি ৪: "Sector:" লেবেল খুঁজে সম্পূর্ণ ভ্যালু নেওয়া
       if (!sector) {
         const bodyText = $$('body').text();
         const sectorLabelRegex = /Sector\s*:\s*/i;
@@ -495,7 +497,6 @@ async function fetchAndStoreStockData() {
         if (sectorMatch) {
           const startIndex = sectorMatch.index + sectorMatch[0].length;
           const remainingText = bodyText.substring(startIndex);
-          // Improved regex to capture full sector name including special characters
           const sectorValueMatch = remainingText.match(/^([A-Za-z0-9\s&()\-.,]+?)(?=\s{2,}|\n|Sector|[A-Z][a-z]+\s*:|$)/);
 
           if (sectorValueMatch && sectorValueMatch[1]) {
@@ -532,7 +533,7 @@ async function fetchAndStoreStockData() {
       }
       if (sector) console.log(`   ✅ Method 5 (Bond check) found: ${sector}`);
 
-      // পদ্ধতি ৬: HTML স্ট্রাকচার থেকে সরাসরি খোঁজা (সর্বশেষ চেষ্টা)
+      // পদ্ধতি ৬: HTML স্ট্রাকচার থেকে সরাসরি খোঁজা
       if (!sector) {
         const htmlText = $$.html();
         const sectorPattern = />Sector\s*:?\s*<\/(?:th|td)>\s*<td[^>]*>([^<]+)<\/td>/i;
@@ -554,14 +555,14 @@ async function fetchAndStoreStockData() {
         const ths = $row.find('th');
         const tds = $row.find('td');
 
-        ths.each((i, th) => {
+        ths.each((index, th) => {
           const key = $$(th).text().trim();
-          const raw = $$(tds[i]).text().trim().replace(/,/g, '');
+          const raw = $$(tds[index]).text().trim().replace(/,/g, '');
           const value = raw === '' ? null : raw;
 
           if (key === 'Opening Price') open = parseFloat(value);
           if (key === "Market Capitalization (mn)") marketCap = parseFloat(value);
-          // ✅ Free Float Market Cap সংগ্রহ
+          // ✅ NEW: Free Float Market Cap সংগ্রহ
           if (key === "Free Float Market Cap. (mn)") freeFloatMarketCap = parseFloat(value);
         });
       });
@@ -579,7 +580,7 @@ async function fetchAndStoreStockData() {
         trades: ltpData.trades,
         change: ltpData.change,
         marketCap,
-        freeFloatMarketCap,  // ✅ নতুন ফিল্ড
+        freeFloatMarketCap,  // ✅ NEW FIELD
         sector
       });
 
@@ -604,11 +605,4 @@ async function fetchAndStoreStockData() {
 fetchAndStoreStockData()
 
 
-
-
-
-
-
-
-
-
+                            

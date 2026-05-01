@@ -185,8 +185,8 @@ async function fetchAndStoreStockData() {
 
       // পদ্ধতি ৪: "Sector:" লেবেল খুঁজে সম্পূর্ণ ভ্যালু নেওয়া (ফিক্সড রেগেক্স)
       if (!sector) {
-        const bodyText = $$('body').text();
-        const sectorLabelRegex = /Sector\s*:\s*/i;
+        const bodyText = $$('body').text(); */  //এটা পরে ডিলিট করতে হবে
+       // const sectorLabelRegex = /Sector\s*:\s*/i;  
         /*let sectorMatch = bodyText.match(sectorLabelRegex);
         
         if (sectorMatch) {

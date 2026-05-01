@@ -1,4 +1,4 @@
-const crone = require("node-cron")
+/. const crone = require("node-cron")
 require('dotenv').config();
 const axios = require('axios');
 const cheerio = require('cheerio');
@@ -295,4 +295,4 @@ async function fetchAndStoreStockData() {
   console.log(`✅ Done. Success: ${success}, Failed: ${failed}`);
   mongoose.connection.close();
 }
-fetchAndStoreStockData()
+fetchAndStoreStockData()./

@@ -2,8 +2,7 @@ name: Run DSE Scraper
 
 on:
   schedule:
-    - cron: '3 14 * * *'
-      timezone: 'Asia/Dhaka'
+    - cron: '3 8 * * *'
   workflow_dispatch:  # ম্যানুয়ালি চালাতে পারবে
 
 jobs:

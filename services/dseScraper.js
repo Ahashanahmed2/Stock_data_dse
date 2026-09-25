@@ -140,10 +140,10 @@ async function getCompanyDetails(symbol) {
 // ─────────────────────────────────────────────
 async function fetchAndStoreStockData() {
   const { isMarketOpen, date } = await getMarketStatus();
-  if (!isMarketOpen || !date) {
-    console.log('❌ Market Closed Today or Date not found');
-    mongoose.connection.close();
-    return;
+  //if (!isMarketOpen || !date) {
+    //console.log('❌ Market Closed Today or Date not found');
+    //mongoose.connection.close();
+    //return;
   }
 
   const board = await getLatestBoard();

@@ -1,50 +1,81 @@
-const crone = require("node-cron");
-require('dotenv').config();
 const axios = require('axios');
 const cheerio = require('cheerio');
 const mongoose = require('mongoose');
 const https = require('https');
 const CandleData = require('./../models/CandleData');
 
-// ✅ স্থায়ী SSL সমাধান - Git Action-এর জন্য অপটিমাইজড
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'; // Git Action-এ SSL ইস্যু সমাধান
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
-// কাস্টম HTTPS এজেন্ট
 const httpsAgent = new https.Agent({
   rejectUnauthorized: false,
   keepAlive: true,
-  timeout: 60000
+  timeout: 60000,
 });
-
-// axios কনফিগারেশন
 axios.defaults.httpsAgent = httpsAgent;
 axios.defaults.timeout = 60000;
 
-// MongoDB সংযোগ
 mongoose.connect(process.env.MONGO_URI, {
   serverSelectionTimeoutMS: 5000,
   socketTimeoutMS: 45000,
 });
 
-//Telegram সংযোগ
-let TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
-let TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+const BASE = 'https://new.dsebd.org';
 
-// ✅ মার্কেট খোলা কি না চেক করুন
+// ─────────────────────────────────────────────
+// ১. latest-share-price থেকে পুরো বোর্ড
+// ─────────────────────────────────────────────
+async function getLatestBoard() {
+  const { data: html } = await axios.get(`${BASE}/markets/latest-share-price`);
+  const $ = cheerio.load(html);
+  const rows = [];
+
+  $('table tbody tr').each((_, row) => {
+    const $row = $(row);
+    const symbol = $row.find('td:nth-child(2) a').text().trim();
+    if (!symbol) return;
+
+    const num = (sel) => {
+      const t = $row.find(sel).text().trim().replace(/,/g, '');
+      const v = parseFloat(t);
+      return isNaN(v) ? null : v;
+    };
+    const int = (sel) => {
+      const t = $row.find(sel).text().trim().replace(/,/g, '');
+      const v = parseInt(t, 10);
+      return isNaN(v) ? null : v;
+    };
+
+    rows.push({
+      symbol,
+      close:  num('td:nth-child(3)'),   // LTP
+      high:   num('td:nth-child(4)'),
+      low:    num('td:nth-child(5)'),
+      ycp:    num('td:nth-child(7)'),
+      change: num('td:nth-child(8)'),
+      trades: int('td:nth-child(9)'),
+      value:  num('td:nth-child(10)'),  // VALUE (mn)
+      volume: int('td:nth-child(11)'),
+    });
+  });
+
+  return rows;
+}
+
+// ─────────────────────────────────────────────
+// ২. market status / today's date
+// ─────────────────────────────────────────────
 async function getMarketStatus() {
   try {
-    const { data: html } = await axios.get('https://www.dsebd.org/index.php');
-    const $ = cheerio.load(html);
-    const updateText = $('h2.Bodyheading').first().text().trim();
-
-    const match = updateText.match(/Last update on (\w+ \d{2}, \d{4}) at/);
-    if (match && match[1]) {
+    const { data: html } = await axios.get(`${BASE}/markets/latest-share-price`);
+    const match = html.match(/On (\w+ \d{1,2}, \d{4}) at/);
+    if (match) {
       const updateDate = new Date(match[1]);
       const today = new Date();
-      const isMarketOpen = updateDate.toDateString() === today.toDateString();
       return {
-        isMarketOpen,
-        date: isMarketOpen ? updateDate.toISOString().split('T')[0] : null
+        isMarketOpen: updateDate.toDateString() === today.toDateString(),
+        date: updateDate.toISOString().split('T')[0],
       };
     }
     return { isMarketOpen: false, date: null };
@@ -54,28 +85,59 @@ async function getMarketStatus() {
   }
 }
 
-let count = 1;
+// ─────────────────────────────────────────────
+// ৩. /company/{symbol} থেকে sector + marketCap + freeFloat + open
+// ─────────────────────────────────────────────
+async function getCompanyDetails(symbol) {
+  const encoded = encodeURIComponent(symbol);
+  const { data: html } = await axios.get(`${BASE}/company/${encoded}`);
+  const $ = cheerio.load(html);
 
-// ✅ স্টক সিম্বল সংগ্রহ করুন
-async function getStockSymbols() {
-  try {
-    const { data: html } = await axios.get('https://www.dsebd.org/latest_share_price_scroll_by_ltp.php');
-    const $ = cheerio.load(html);
-    const symbols = [];
+  const out = {
+    sector: null,
+    marketCap: null,
+    freeFloatMarketCap: null,
+    open: null,
+  };
 
-    $('table.table tbody tr').each((_, row) => {
-      const symbol = $(row).find('td:nth-child(2) a').text().trim();
-      if (symbol) symbols.push(symbol);
+  // ── Key statistics বক্সে লেবেল-মান পেয়ার খোঁজা
+  $('div').each((_, div) => {
+    const $div = $(div);
+    const header = $div.children().first().text().trim();
+    if (header !== 'Key statistics') return;
+
+    // প্রতিটি ছোট কার্ডে লেবেল + মান
+    $div.find('div.p-3.rounded-xl').each((_, card) => {
+      const $card = $(card);
+      const label = $card.find('div').first().text().trim();
+      const valueText = $card.children().last().text().trim();
+
+      const numFrom = (s) => {
+        const m = s.replace(/,/g, '').match(/-?\d+(\.\d+)?/);
+        return m ? parseFloat(m[0]) : null;
+      };
+
+      if (/^Market cap$/i.test(label)) out.marketCap = numFrom(valueText);
+      else if (/^Free float market cap$/i.test(label)) out.freeFloatMarketCap = numFrom(valueText);
+      else if (/^Opening price$/i.test(label)) out.open = numFrom(valueText);
     });
+  });
 
-    return symbols;
-  } catch (err) {
-    console.error('❌ Symbols fetch error:', err.message);
-    return [];
-  }
+  // ── Sector — h1 এর পরে rounded-full ব্যাজের প্রথমটি
+  $('span.inline-flex.items-center.rounded-full').each((_, el) => {
+    const t = $(el).text().trim();
+    // "DSE PUBLIC", "HQ · ..." ব্যাজ বাদ দিয়ে প্রথম সাধারণ ব্যাজ
+    if (!out.sector && t && !/^(DSE |HQ ·|Debt|Equity)/i.test(t)) {
+      out.sector = t;
+    }
+  });
+
+  return out;
 }
 
-// ✅ DSE থেকে ডেটা স্ক্র্যাপ এবং MongoDB-তে সংরক্ষণ (ডুপ্লিকেট চেক সহ)
+// ─────────────────────────────────────────────
+// ৪. main
+// ─────────────────────────────────────────────
 async function fetchAndStoreStockData() {
   const { isMarketOpen, date } = await getMarketStatus();
   if (!isMarketOpen || !date) {
@@ -84,236 +146,68 @@ async function fetchAndStoreStockData() {
     return;
   }
 
-  const symbols = await getStockSymbols();
+  const board = await getLatestBoard();
+  console.log(`📦 Total symbols: ${board.length}`);
+
   await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
     chat_id: TELEGRAM_CHAT_ID,
-    text: `📦 Scriping Start 📦\n📦 Total symbols: ${symbols.length}`
+    text: `📦 Scraping Start\n📦 Total symbols: ${board.length}`,
   });
-
-  console.log(`📦 Total symbols: ${symbols.length}`);
 
   let success = 0, failed = 0;
 
-  const { data: detailHtml } = await axios.get('https://www.dsebd.org/latest_share_price_scroll_by_ltp.php');
-  const $ = cheerio.load(detailHtml);
-
-  for (const symbol of symbols) {
+  for (const row of board) {
     try {
-      // 📌 ডুপ্লিকেট চেক (symbol + date)
-      const exists = await CandleData.findOne({ symbol, date });
+      const exists = await CandleData.findOne({ symbol: row.symbol, date });
       if (exists) {
-        console.log(`ℹ️ Already exists: ${symbol} on ${date}`);
+        console.log(`ℹ️ Already exists: ${row.symbol} on ${date}`);
         continue;
       }
 
-      // LTP ডেটা সংগ্রহ
-      let ltpData = {};
-      $('table.table tbody tr').each((_, row) => {
-        const sym = $(row).find('td:nth-child(2) a').text().trim();
-        if (sym === symbol) {
-          ltpData = {
-            close: parseFloat($(row).find('td:nth-child(6)').text().trim().replace(/,/g, '')) || null,
-            high: parseFloat($(row).find('td:nth-child(4)').text().trim().replace(/,/g, '')) || null,
-            low: parseFloat($(row).find('td:nth-child(5)').text().trim().replace(/,/g, '')) || null,
-            volume: parseInt($(row).find('td:nth-child(11)').text().trim().replace(/,/g, '')) || null,
-            value: parseFloat($(row).find('td:nth-child(10)').text().trim().replace(/,/g, '')) || null,
-            change: parseFloat($(row).find('td:nth-child(8)').text().trim().replace(/,/g, '')) || null,
-            trades: parseInt($(row).find('td:nth-child(9)').text().trim().replace(/,/g, '')) || null
-          };
-        }
-      });
-
-      if (!ltpData.close) {
-        console.warn(`⚠️ Skipped ${symbol}: No LTP data`);
+      if (!row.close) {
+        console.warn(`⚠️ Skipped ${row.symbol}: No LTP data`);
         failed++;
         continue;
       }
 
-      // কোম্পানির অতিরিক্ত ডেটা
-      const { data: companyHtml } = await axios.get(`https://www.dsebd.org/displayCompany.php?name=${symbol}`);
-      const $$ = cheerio.load(companyHtml);
-      let table = $$('table#company').eq(1);
-
-      let open = null;
-      let marketCap = null;
-      let freeFloatMarketCap = null;  // ✅ NEW: Free Float Market Cap
-      let sector = null;
-
-      // --- ✅ চূড়ান্ত সেক্টর পার্সিং (সকল সম্ভাব্য পদ্ধতি) ---
-
-      // পদ্ধতি ১: যেকোনো টেবিল সেলে "Sector" টেক্সট খুঁজে পরবর্তী সেলের মান নেওয়া
-      $$('td, th').each((_, el) => {
-        const text = $$(el).text().trim();
-        if (text.match(/^Sector\s*$/i)) {
-          const nextCell = $$(el).next('td');
-          if (nextCell.length) {
-            const value = nextCell.text().trim();
-            if (value && value.length > 2 && value.length < 100 && !value.includes('Company List')) {
-              sector = value;
-              return false;
-            }
-          }
-        }
-      });
-      if (sector) console.log(`   ✅ Method 1 found: ${sector}`);
-
-      // পদ্ধতি ২: "Basic Information" টেবিলের মধ্যে ২-কলাম ফরম্যাটে খোঁজা
-      if (!sector) {
-        $$('table').each((_, tbl) => {
-          const $tbl = $$(tbl);
-          if ($tbl.text().includes('Basic Information')) {
-            $tbl.find('tr').each((_, row) => {
-              const cells = $$(row).find('td');
-              if (cells.length === 2) {
-                const key = $$(cells[0]).text().trim();
-                if (key === 'Sector') {
-                  const value = $$(cells[1]).text().trim();
-                  if (value && value.length > 2 && value.length < 100) {
-                    sector = value;
-                    return false;
-                  }
-                }
-              }
-            });
-          }
-          if (sector) return false;
-        });
+      let details = {};
+      try {
+        details = await getCompanyDetails(row.symbol);
+      } catch (e) {
+        console.warn(`⚠️ Company detail failed for ${row.symbol}: ${e.message}`);
       }
-      if (sector) console.log(`   ✅ Method 2 found: ${sector}`);
 
-      // পদ্ধতি ৩: "Basic Information" টেবিলের মধ্যে ৪-কলাম ফরম্যাটে খোঁজা
-      if (!sector) {
-        $$('table').each((_, tbl) => {
-          const $tbl = $$(tbl);
-          if ($tbl.text().includes('Basic Information')) {
-            $tbl.find('tr').each((_, row) => {
-              const cells = $$(row).find('td');
-              if (cells.length >= 4) {
-                const key1 = $$(cells[0]).text().trim();
-                const value1 = $$(cells[1]).text().trim();
-                const key2 = $$(cells[2]).text().trim();
-                const value2 = $$(cells[3]).text().trim();
-
-                if (key1 === 'Sector' && value1 && value1.length < 100) sector = value1;
-                if (key2 === 'Sector' && value2 && value2.length < 100) sector = value2;
-                if (sector) return false;
-              }
-            });
-          }
-          if (sector) return false;
-        });
-      }
-      if (sector) console.log(`   ✅ Method 3 found: ${sector}`);
-
-      // পদ্ধতি ৪: "Sector:" লেবেল খুঁজে সম্পূর্ণ ভ্যালু নেওয়া
-      if (!sector) {
-        const bodyText = $$('body').text(); 
-        const sectorLabelRegex = /Sector\s*:\s*/i; 
-        let sectorMatch = bodyText.match(sectorLabelRegex);
-
-        if (sectorMatch) {
-          const startIndex = sectorMatch.index + sectorMatch[0].length;
-          const remainingText = bodyText.substring(startIndex);
-          const sectorValueMatch = remainingText.match(/^([A-Za-z0-9\s&()\-.,]+?)(?=\s{2,}|\n|Sector|[A-Z][a-z]+\s*:|$)/);
-
-          if (sectorValueMatch && sectorValueMatch[1]) {
-            let possibleSector = sectorValueMatch[1].trim();
-            if (possibleSector.length > 2 && possibleSector.length < 100 && !possibleSector.includes('Company List')) {
-              sector = possibleSector;
-            }
-          }
-        }
-      }
-      if (sector) console.log(`   ✅ Method 4 found: ${sector}`);
-
-      // পদ্ধতি ৫: Bond সেক্টরের জন্য স্পেশাল চেক
-      if (!sector) {
-        const bodyText = $$('body').text();
-        const bondPatterns = [
-          /Sector\s*:?\s*(Corporate\s*Bond)/i,
-          /Sector\s*:?\s*(Govt\.?\s*Bond)/i,
-          /Sector\s*:?\s*(Treasury\s*Bond)/i,
-          /Sector\s*:?\s*([A-Za-z\s]*Bond[A-Za-z\s]*)/i,
-          /Sector\s*:?\s*([A-Za-z\s]*Debenture[A-Za-z\s]*)/i
-        ];
-
-        for (const pattern of bondPatterns) {
-          const match = bodyText.match(pattern);
-          if (match && match[1]) {
-            let bondSector = match[1].trim();
-            if (bondSector.length > 2 && bondSector.length < 100) {
-              sector = bondSector;
-              break;
-            }
-          }
-        }
-      }
-      if (sector) console.log(`   ✅ Method 5 (Bond check) found: ${sector}`);
-
-      // পদ্ধতি ৬: HTML স্ট্রাকচার থেকে সরাসরি খোঁজা
-      if (!sector) {
-        const htmlText = $$.html();
-        const sectorPattern = />Sector\s*:?\s*<\/(?:th|td)>\s*<td[^>]*>([^<]+)<\/td>/i;
-        const match = htmlText.match(sectorPattern);
-        if (match && match[1]) {
-          let value = match[1].trim();
-          if (value && value.length > 2 && value.length < 100) {
-            sector = value;
-          }
-        }
-      }
-      if (sector) console.log(`   ✅ Method 6 (HTML structure) found: ${sector}`);
-
-      console.log(`   🔍 Final Sector for ${symbol}: ${sector || 'NOT FOUND'}`);
-      // --- সেক্টর পার্সিং শেষ ---
-
-      table.find('tr').each((_, row) => {
-        const $row = $$(row);
-        const ths = $row.find('th');
-        const tds = $row.find('td');
-
-        ths.each((index, th) => {
-          const key = $$(th).text().trim();
-          const raw = $$(tds[index]).text().trim().replace(/,/g, '');
-          const value = raw === '' ? null : raw;
-
-          if (key === 'Opening Price') open = parseFloat(value);
-          if (key === "Market Capitalization (mn)") marketCap = parseFloat(value);
-          // ✅ NEW: Free Float Market Cap সংগ্রহ
-          if (key === "Free Float Market Cap. (mn)") freeFloatMarketCap = parseFloat(value);
-        });
-      });
-
-      // ✅ MongoDB-তে ইনসার্ট (sector + freeFloatMarketCap সহ)
       const candle = new CandleData({
-        symbol,
+        symbol:  row.symbol,
         date,
-        open,
-        close: ltpData.close,
-        high: ltpData.high,
-        low: ltpData.low,
-        volume: ltpData.volume,
-        value: ltpData.value,
-        trades: ltpData.trades,
-        change: ltpData.change,
-        marketCap,
-        freeFloatMarketCap,  // ✅ NEW FIELD
-        sector
+        open:    details.open,
+        close:   row.close,
+        high:    row.high,
+        low:     row.low,
+        volume:  row.volume,
+        value:   row.value,
+        trades:  row.trades,
+        change:  row.change,
+        marketCap:         details.marketCap,
+        freeFloatMarketCap: details.freeFloatMarketCap,
+        sector:  details.sector,
       });
 
       await candle.save();
-      console.log(`✅ Saved: ${symbol} | Sector: ${sector || 'N/A'} | Free Float MCap: ${freeFloatMarketCap || 'N/A'}`);
+      console.log(`✅ ${row.symbol} | sector=${details.sector || 'N/A'} | mcap=${details.marketCap ?? 'N/A'}`);
       success++;
+
+      // polite delay — একটু বিরতি দিয়ে রিকোয়েস্ট করলে block কম হবে
+      await new Promise((r) => setTimeout(r, 100));
     } catch (err) {
-      console.warn(`⚠️ Error for ${symbol}: ${err.message}`);
+      console.warn(`⚠️ Error for ${row.symbol}: ${err.message}`);
       failed++;
     }
   }
 
-  // ✅ শেষে টেলিগ্রামে নোটিফিকেশন
   await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
     chat_id: TELEGRAM_CHAT_ID,
-    text: `✅ Done. Success: ${success}, Failed: ${failed}`
+    text: `✅ Done. Success: ${success}, Failed: ${failed}`,
   });
 
   console.log(`✅ Done. Success: ${success}, Failed: ${failed}`);

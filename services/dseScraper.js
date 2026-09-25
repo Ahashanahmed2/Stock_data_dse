@@ -73,7 +73,6 @@ async function getLatestBoard() {
   console.log(`🔢 all <tr> count: ${$('tr').length}`);
   console.log(`🔢 /company/ anchors: ${$('a[href*="/company/"]').length}`);
 
-  // প্রথম ৪০০ অক্ষর log (বুঝতে হবে কী আসছে)
   console.log('📄 HTML head: ' + html.slice(0, 400).replace(/\s+/g, ' '));
 
   const rows = [];
@@ -97,18 +96,18 @@ async function getLatestBoard() {
 
     rows.push({
       symbol,
-      close: num('td:nth-child(3)'),   // LTP
+      close: num('td:nth-child(3)'),
       high: num('td:nth-child(4)'),
       low: num('td:nth-child(5)'),
       ycp: num('td:nth-child(7)'),
       change: num('td:nth-child(8)'),
       trades: int('td:nth-child(9)'),
-      value: num('td:nth-child(10)'),  // VALUE (mn)
+      value: num('td:nth-child(10)'),
       volume: int('td:nth-child(11)'),
     });
   });
 
-  // Fallback — টেবিল না পেলে /company/ anchor থেকে symbol collection
+  // Fallback — টেবিল খালি হলে /company/ anchor থেকে symbol
   if (rows.length === 0) {
     console.log('⚠️ Table empty — trying anchor fallback');
     $('a[href*="/company/"]').each((_, a) => {
@@ -117,9 +116,12 @@ async function getLatestBoard() {
       if (m && m[1]) {
         const sym = decodeURIComponent(m[1]);
         if (!rows.find((r) => r.symbol === sym)) {
-          rows.push({ symbol: sym, close: null, high: null, low: null,
-                      ycp: null, change: null, trades: null, value: null,
-                      volume: null });
+          rows.push({
+            symbol: sym,
+            close: null, high: null, low: null,
+            ycp: null, change: null,
+            trades: null, value: null, volume: null,
+          });
         }
       }
     });
@@ -135,15 +137,56 @@ async function getLatestBoard() {
 async function getMarketStatus() {
   try {
     const { data: html } = await axios.get(`${BASE}/markets/latest-share-price`);
-    const match = html.match(/On (\w+ \d{1,2}, \d{4}) at/);
-    if (match) {
-      const updateDate = new Date(match[1]);
-      const today = new Date();
-      return {
-        isMarketOpen: updateDate.toDateString() === today.toDateString(),
-        date: updateDate.toISOString().split('T')[0],
-      };
+
+    // 🔍 ডায়াগনস্টিক
+    console.log(`📄 [status] HTML length: ${html.length}`);
+    console.log(`📄 [status] Contains 'On ': ${html.includes('On ')}`);
+    console.log(`📄 [status] Contains 'at ': ${html.includes('at ')}`);
+    console.log(`📄 [status] Contains 'Last update': ${html.includes('Last update')}`);
+
+    // সব সম্ভাব্য date pattern try
+    const patterns = [
+      { name: 'On <Mon> <d>, <y> at', re: /On (\w+ \d{1,2}, \d{4}) at/ },
+      { name: 'On <d> <Mon>, <y> at', re: /On (\d{1,2} \w+,? \d{4}) at/ },
+      { name: 'On <d> <Mon> <y> at',  re: /On (\d{1,2} \w+ \d{4}) at/ },
+      { name: 'Last update on <Mon> <d>, <y>', re: /Last update on (\w+ \d{1,2}, \d{4})/i },
+      { name: 'Updated <Mon> <d>,? <y>', re: /Updated?:?\s*([A-Za-z]+ \d{1,2},? \d{4})/i },
+      { name: '<Mon> <d>, <y>', re: /(\w+ \d{1,2}, \d{4})/ },
+    ];
+
+    for (const p of patterns) {
+      const m = html.match(p.re);
+      if (m && m[1]) {
+        console.log(`✅ Matched pattern: [${p.name}]`);
+        console.log(`📅 Date string: "${m[1]}"`);
+
+        const updateDate = new Date(m[1]);
+        if (isNaN(updateDate.getTime())) {
+          console.log(`⚠️ Could not parse date: "${m[1]}"`);
+          continue;
+        }
+
+        console.log(`📅 Parsed date: ${updateDate.toString()}`);
+        const today = new Date();
+        const isSame = updateDate.toDateString() === today.toDateString();
+        return {
+          isMarketOpen: isSame,
+          date: updateDate.toISOString().split('T')[0],
+        };
+      }
     }
+
+    // কিছুই না মিললে debug info
+    console.log('❌ No date pattern matched');
+    const onIndex = html.indexOf('On ');
+    if (onIndex > -1) {
+      console.log(`📍 'On ' found at index ${onIndex}`);
+      console.log('📄 Context: ' + html.slice(onIndex, onIndex + 200).replace(/\s+/g, ' '));
+    } else {
+      console.log('📍 "On " not found');
+      console.log('📄 HTML first 500: ' + html.slice(0, 500).replace(/\s+/g, ' '));
+    }
+
     return { isMarketOpen: false, date: null };
   } catch (err) {
     console.error('❌ Market status error:', err.message);
@@ -166,7 +209,7 @@ async function getCompanyDetails(symbol) {
     open: null,
   };
 
-  // ── Key statistics বক্সে লেবেল-মান পেয়ার খোঁজা
+  // Key statistics বক্স
   $('div').each((_, div) => {
     const $div = $(div);
     const header = $div.children().first().text().trim();
@@ -188,7 +231,7 @@ async function getCompanyDetails(symbol) {
     });
   });
 
-  // ── Sector — h1 এর পরে rounded-full badge থেকে প্রথমটি
+  // Sector — rounded-full badge
   $('span.inline-flex.items-center.rounded-full').each((_, el) => {
     const t = $(el).text().trim();
     if (!out.sector && t && !/^(DSE |HQ ·|Debt|Equity)/i.test(t)) {
@@ -207,10 +250,11 @@ async function fetchAndStoreStockData() {
 
   console.log(`📅 Date: ${date} | Market open: ${isMarketOpen}`);
 
-  // ⚠️ market closed হলেও চালাবো, তবে date না থাকলে থামবো
   if (!date) {
     console.log('❌ Date not found — aborting');
-    await sendTelegram('❌ Scraper aborted: no date found');
+    await sendTelegram(
+      `❌ Scraper aborted: could not determine date from DSE page.\nMarket open: ${isMarketOpen}`
+    );
     mongoose.connection.close();
     return;
   }
@@ -277,7 +321,6 @@ async function fetchAndStoreStockData() {
       );
       success++;
 
-      // polite delay
       await new Promise((r) => setTimeout(r, 100));
     } catch (err) {
       console.warn(`⚠️ Error for ${row.symbol}: ${err.message}`);

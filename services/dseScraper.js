@@ -1,9 +1,12 @@
+// services/dseScraper.js
+
 const axios = require('axios');
 const cheerio = require('cheerio');
 const mongoose = require('mongoose');
 const https = require('https');
 const CandleData = require('./../models/CandleData');
 
+// TLS — GitHub Actions-এর জন্য
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
 const httpsAgent = new https.Agent({
@@ -14,6 +17,16 @@ const httpsAgent = new https.Agent({
 axios.defaults.httpsAgent = httpsAgent;
 axios.defaults.timeout = 60000;
 
+// বাস্তব ব্রাউজারের মতো headers
+axios.defaults.headers.common['User-Agent'] =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+  '(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+axios.defaults.headers.common['Accept'] =
+  'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8';
+axios.defaults.headers.common['Accept-Language'] = 'en-US,en;q=0.9';
+axios.defaults.headers.common['Cache-Control'] = 'no-cache';
+
+// MongoDB সংযোগ
 mongoose.connect(process.env.MONGO_URI, {
   serverSelectionTimeoutMS: 5000,
   socketTimeoutMS: 45000,
@@ -24,13 +37,48 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const BASE = 'https://new.dsebd.org';
 
 // ─────────────────────────────────────────────
+// Telegram helper
+// ─────────────────────────────────────────────
+async function sendTelegram(text) {
+  if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT_ID) return;
+  try {
+    await axios.post(
+      `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,
+      { chat_id: TELEGRAM_CHAT_ID, text }
+    );
+  } catch (e) {
+    console.warn(`⚠️ Telegram failed: ${e.message}`);
+  }
+}
+
+// ─────────────────────────────────────────────
 // ১. latest-share-price থেকে পুরো বোর্ড
 // ─────────────────────────────────────────────
 async function getLatestBoard() {
-  const { data: html } = await axios.get(`${BASE}/markets/latest-share-price`);
+  const url = `${BASE}/markets/latest-share-price`;
+  console.log(`🌐 Fetching: ${url}`);
+
+  const { data: html, status } = await axios.get(url);
+
+  // 🔍 ডায়াগনস্টিক
+  console.log(`📄 HTTP status: ${status}`);
+  console.log(`📄 HTML length: ${html.length} bytes`);
+  console.log(`📄 Contains <table>: ${html.includes('<table')}`);
+  console.log(`📄 Contains 'TRADING CODE': ${html.includes('TRADING CODE')}`);
+  console.log(`📄 Contains '1JANATAMF': ${html.includes('1JANATAMF')}`);
+
   const $ = cheerio.load(html);
+  console.log(`🔢 <table> count: ${$('table').length}`);
+  console.log(`🔢 table tbody tr count: ${$('table tbody tr').length}`);
+  console.log(`🔢 all <tr> count: ${$('tr').length}`);
+  console.log(`🔢 /company/ anchors: ${$('a[href*="/company/"]').length}`);
+
+  // প্রথম ৪০০ অক্ষর log (বুঝতে হবে কী আসছে)
+  console.log('📄 HTML head: ' + html.slice(0, 400).replace(/\s+/g, ' '));
+
   const rows = [];
 
+  // Primary selector — টেবিল
   $('table tbody tr').each((_, row) => {
     const $row = $(row);
     const symbol = $row.find('td:nth-child(2) a').text().trim();
@@ -49,16 +97,34 @@ async function getLatestBoard() {
 
     rows.push({
       symbol,
-      close:  num('td:nth-child(3)'),   // LTP
-      high:   num('td:nth-child(4)'),
-      low:    num('td:nth-child(5)'),
-      ycp:    num('td:nth-child(7)'),
+      close: num('td:nth-child(3)'),   // LTP
+      high: num('td:nth-child(4)'),
+      low: num('td:nth-child(5)'),
+      ycp: num('td:nth-child(7)'),
       change: num('td:nth-child(8)'),
       trades: int('td:nth-child(9)'),
-      value:  num('td:nth-child(10)'),  // VALUE (mn)
+      value: num('td:nth-child(10)'),  // VALUE (mn)
       volume: int('td:nth-child(11)'),
     });
   });
+
+  // Fallback — টেবিল না পেলে /company/ anchor থেকে symbol collection
+  if (rows.length === 0) {
+    console.log('⚠️ Table empty — trying anchor fallback');
+    $('a[href*="/company/"]').each((_, a) => {
+      const href = $(a).attr('href') || '';
+      const m = href.match(/\/company\/([^/?#]+)/);
+      if (m && m[1]) {
+        const sym = decodeURIComponent(m[1]);
+        if (!rows.find((r) => r.symbol === sym)) {
+          rows.push({ symbol: sym, close: null, high: null, low: null,
+                      ycp: null, change: null, trades: null, value: null,
+                      volume: null });
+        }
+      }
+    });
+    console.log(`🔁 Fallback symbols: ${rows.length}`);
+  }
 
   return rows;
 }
@@ -106,7 +172,6 @@ async function getCompanyDetails(symbol) {
     const header = $div.children().first().text().trim();
     if (header !== 'Key statistics') return;
 
-    // প্রতিটি ছোট কার্ডে লেবেল + মান
     $div.find('div.p-3.rounded-xl').each((_, card) => {
       const $card = $(card);
       const label = $card.find('div').first().text().trim();
@@ -123,10 +188,9 @@ async function getCompanyDetails(symbol) {
     });
   });
 
-  // ── Sector — h1 এর পরে rounded-full ব্যাজের প্রথমটি
+  // ── Sector — h1 এর পরে rounded-full badge থেকে প্রথমটি
   $('span.inline-flex.items-center.rounded-full').each((_, el) => {
     const t = $(el).text().trim();
-    // "DSE PUBLIC", "HQ · ..." ব্যাজ বাদ দিয়ে প্রথম সাধারণ ব্যাজ
     if (!out.sector && t && !/^(DSE |HQ ·|Debt|Equity)/i.test(t)) {
       out.sector = t;
     }
@@ -140,21 +204,35 @@ async function getCompanyDetails(symbol) {
 // ─────────────────────────────────────────────
 async function fetchAndStoreStockData() {
   const { isMarketOpen, date } = await getMarketStatus();
-  //if (!isMarketOpen || !date) {
-    //console.log('❌ Market Closed Today or Date not found');
-    //mongoose.connection.close();
-    //return;
-  //}
+
+  console.log(`📅 Date: ${date} | Market open: ${isMarketOpen}`);
+
+  // ⚠️ market closed হলেও চালাবো, তবে date না থাকলে থামবো
+  if (!date) {
+    console.log('❌ Date not found — aborting');
+    await sendTelegram('❌ Scraper aborted: no date found');
+    mongoose.connection.close();
+    return;
+  }
 
   const board = await getLatestBoard();
   console.log(`📦 Total symbols: ${board.length}`);
 
-  await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
-    chat_id: TELEGRAM_CHAT_ID,
-    text: `📦 Scraping Start\n📦 Total symbols: ${board.length}`,
-  });
+  await sendTelegram(
+    `📦 Scraping Start\n📅 Date: ${date}\n📦 Total symbols: ${board.length}`
+  );
 
-  let success = 0, failed = 0;
+  if (board.length === 0) {
+    console.log('❌ No symbols found — aborting');
+    await sendTelegram(
+      `⚠️ No symbols found on DSE board.\n📅 Date: ${date}\n(possible bot block or page changed)`
+    );
+    mongoose.connection.close();
+    return;
+  }
+
+  let success = 0;
+  let failed = 0;
 
   for (const row of board) {
     try {
@@ -178,26 +256,28 @@ async function fetchAndStoreStockData() {
       }
 
       const candle = new CandleData({
-        symbol:  row.symbol,
+        symbol: row.symbol,
         date,
-        open:    details.open,
-        close:   row.close,
-        high:    row.high,
-        low:     row.low,
-        volume:  row.volume,
-        value:   row.value,
-        trades:  row.trades,
-        change:  row.change,
-        marketCap:         details.marketCap,
+        open: details.open,
+        close: row.close,
+        high: row.high,
+        low: row.low,
+        volume: row.volume,
+        value: row.value,
+        trades: row.trades,
+        change: row.change,
+        marketCap: details.marketCap,
         freeFloatMarketCap: details.freeFloatMarketCap,
-        sector:  details.sector,
+        sector: details.sector,
       });
 
       await candle.save();
-      console.log(`✅ ${row.symbol} | sector=${details.sector || 'N/A'} | mcap=${details.marketCap ?? 'N/A'}`);
+      console.log(
+        `✅ ${row.symbol} | sector=${details.sector || 'N/A'} | mcap=${details.marketCap ?? 'N/A'}`
+      );
       success++;
 
-      // polite delay — একটু বিরতি দিয়ে রিকোয়েস্ট করলে block কম হবে
+      // polite delay
       await new Promise((r) => setTimeout(r, 100));
     } catch (err) {
       console.warn(`⚠️ Error for ${row.symbol}: ${err.message}`);
@@ -205,13 +285,17 @@ async function fetchAndStoreStockData() {
     }
   }
 
-  await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
-    chat_id: TELEGRAM_CHAT_ID,
-    text: `✅ Done. Success: ${success}, Failed: ${failed}`,
-  });
+  await sendTelegram(
+    `✅ Done\n📅 Date: ${date}\n✅ Success: ${success}\n❌ Failed: ${failed}`
+  );
 
   console.log(`✅ Done. Success: ${success}, Failed: ${failed}`);
   mongoose.connection.close();
 }
 
-fetchAndStoreStockData();
+fetchAndStoreStockData().catch(async (err) => {
+  console.error('💥 Fatal error:', err);
+  await sendTelegram(`💥 Fatal error: ${err.message}`);
+  mongoose.connection.close();
+  process.exit(1);
+});

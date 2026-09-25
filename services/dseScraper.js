@@ -144,7 +144,7 @@ async function fetchAndStoreStockData() {
     //console.log('❌ Market Closed Today or Date not found');
     //mongoose.connection.close();
     //return;
-  }
+  //}
 
   const board = await getLatestBoard();
   console.log(`📦 Total symbols: ${board.length}`);

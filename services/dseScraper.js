@@ -1,19 +1,10 @@
-// services/dseScraper.js — v3.0.0
-// Complete daily scraper for new.dsebd.org
-// ✅ Board: tickerInitial JSON (388 symbols) with HTML table fallback
-// ✅ Enrichment: market-depth (open/high/low/ycp) + company page (sector/marketCap)
-// ✅ 300ms delay per symbol, 50-symbol batches with 2s breather
-// ✅ MongoDB upsert, Telegram summary
-
+// services/dseScraper.js — v4.0.0 (FIXED — mirrors Python dashboard logic)
 const axios = require('axios');
 const cheerio = require('cheerio');
 const mongoose = require('mongoose');
 const https = require('https');
 const CandleData = require('./../models/CandleData');
 
-// =========================================
-// TLS
-// =========================================
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
 const httpsAgent = new https.Agent({
@@ -23,8 +14,6 @@ const httpsAgent = new https.Agent({
 });
 axios.defaults.httpsAgent = httpsAgent;
 axios.defaults.timeout = 60000;
-
-// Browser-like headers
 axios.defaults.headers.common['User-Agent'] =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
   '(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
@@ -33,17 +22,11 @@ axios.defaults.headers.common['Accept'] =
 axios.defaults.headers.common['Accept-Language'] = 'en-US,en;q=0.9';
 axios.defaults.headers.common['Cache-Control'] = 'no-cache';
 
-// =========================================
-// MongoDB
-// =========================================
 mongoose.connect(process.env.MONGO_URI, {
   serverSelectionTimeoutMS: 5000,
   socketTimeoutMS: 45000,
 });
 
-// =========================================
-// Config
-// =========================================
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const BASE = 'https://new.dsebd.org';
@@ -52,9 +35,6 @@ const PER_SYMBOL_DELAY_MS = 300;
 const BATCH_SIZE = 50;
 const BATCH_DELAY_MS = 2000;
 
-// =========================================
-// Utilities
-// =========================================
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function sendTelegram(text) {
@@ -70,31 +50,42 @@ async function sendTelegram(text) {
 }
 
 // =========================================
-// ১. Parse tickerInitial JSON (Main board source)
+// Parse tickerInitial — PYTHON DASHBOARD এর সাথে হুবহু মিল
 // =========================================
 function parseTickerInitial(html) {
-  const idx = html.indexOf('"tickerInitial"');
-  if (idx === -1) {
+  // ✅ Python এর মতো: শুধু "tickerInitial" (quotes ছাড়া) খুঁজি
+  const m = html.search(/tickerInitial/);
+  if (m === -1) {
     console.log('❌ tickerInitial not found');
     return null;
   }
 
-  const bracketStart = html.indexOf('[', idx);
-  if (bracketStart === -1) {
-    console.log('❌ no "[" after tickerInitial');
+  console.log(`✅ tickerInitial found at index ${m}`);
+
+  // ✅ Python এর মতো: tickerInitial এর পরে 200 chars এর মধ্যে '[' খুঁজি
+  const bracketStart = html.indexOf('[', m);
+  if (bracketStart === -1 || bracketStart > m + 200) {
+    console.log(`❌ no "[" near tickerInitial (bracketStart=${bracketStart}, m=${m})`);
     return null;
   }
 
-  let depth = 0, inString = false, escapeNext = false, bracketEnd = -1;
+  // ✅ Python এর মতো bracket matching
+  let depth = 0;
+  let bracketEnd = -1;
+  let inString = false;
+  let escapeNext = false;
 
   for (let i = bracketStart; i < Math.min(html.length, bracketStart + 500000); i++) {
     const c = html[i];
+
     if (escapeNext) { escapeNext = false; continue; }
     if (c === '\\') { escapeNext = true; continue; }
     if (c === '"') { inString = !inString; continue; }
     if (inString) continue;
-    if (c === '[') depth++;
-    else if (c === ']') {
+
+    if (c === '[') {
+      depth++;
+    } else if (c === ']') {
       depth--;
       if (depth === 0) { bracketEnd = i; break; }
     }
@@ -107,48 +98,51 @@ function parseTickerInitial(html) {
 
   const raw = html.substring(bracketStart, bracketEnd + 1);
   console.log(`📦 Raw tickerInitial: ${raw.length} bytes`);
+  console.log(`   First 200: ${raw.substring(0, 200).replace(/\s+/g, ' ')}`);
+
+  let tickers = null;
 
   // Method A: direct
   try {
-    const t = JSON.parse(raw);
-    console.log(`✅ Direct JSON: ${t.length} entries`);
-    return t;
+    tickers = JSON.parse(raw);
+    console.log(`✅ Direct JSON parse: ${tickers.length} entries`);
   } catch (e) {
     console.log(`   direct parse failed: ${e.message}`);
   }
 
   // Method B: unescape
-  try {
-    const cleaned = raw.replace(/\\"/g, '"').replace(/\\\\/g, '\\');
-    const t = JSON.parse(cleaned);
-    console.log(`✅ After unescape: ${t.length} entries`);
-    return t;
-  } catch (e) {
-    console.log(`   unescape failed: ${e.message}`);
+  if (!tickers) {
+    try {
+      const cleaned = raw.replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+      tickers = JSON.parse(cleaned);
+      console.log(`✅ After unescape: ${tickers.length} entries`);
+    } catch (e) {
+      console.log(`   unescape failed: ${e.message}`);
+    }
   }
 
-  // Method C: regex
-  try {
-    const out = [];
+  // Method C: regex fallback
+  if (!tickers) {
+    console.log('   trying regex fallback...');
+    tickers = [];
     const pattern = /code\\?"\s*:\s*\\?"([A-Z0-9&._()\-]+)\\?"\s*,\s*\\?"price\\?"\s*:\s*\\?"([\d.,]+)\\?"/g;
-    let m;
-    while ((m = pattern.exec(raw)) !== null) {
-      out.push({ code: m[1], price: m[2], change: 0, delta: 0 });
+    let match;
+    while ((match = pattern.exec(raw)) !== null) {
+      tickers.push({ code: match[1], price: match[2], change: 0, delta: 0 });
     }
-    if (out.length) {
-      console.log(`✅ Regex fallback: ${out.length} entries`);
-      return out;
-    }
-  } catch (e) {
-    console.log(`   regex failed: ${e.message}`);
+    console.log(`✅ Regex fallback: ${tickers.length} entries`);
   }
 
-  console.log('❌ All parse methods failed');
-  return null;
+  if (!tickers || !tickers.length) {
+    console.log('❌ All parse methods failed');
+    return null;
+  }
+
+  return tickers;
 }
 
 // =========================================
-// ২. Latest board — JSON first, table fallback
+// Latest board
 // =========================================
 async function getLatestBoard() {
   const url = `${BASE}/markets/latest-share-price`;
@@ -157,7 +151,13 @@ async function getLatestBoard() {
   const { data: html, status } = await axios.get(url);
   console.log(`📄 HTTP ${status}, length=${html.length}`);
 
-  // --- Try 1: tickerInitial JSON (main) ---
+  // Diagnostic
+  console.log(`📄 Has "tickerInitial": ${html.includes('tickerInitial')}`);
+  console.log(`📄 Has "1JANATAMF": ${html.includes('1JANATAMF')}`);
+  console.log(`📄 Has '"code"': ${html.includes('"code"')}`);
+  console.log(`📄 Has '\\"code\\"': ${html.includes('\\"code\\"')}`);
+
+  // Try tickerInitial JSON
   const tickers = parseTickerInitial(html);
   if (tickers && tickers.length > 0) {
     const rows = [];
@@ -177,14 +177,14 @@ async function getLatestBoard() {
         volume: null,
       });
     }
-    console.log(`✅ Board (tickerInitial): ${rows.length} symbols`);
+    console.log(`✅ Board (tickerInitial JSON): ${rows.length} symbols`);
     if (rows.length) {
       console.log(`   Sample: ${rows.slice(0, 3).map(r => `${r.symbol}=${r.close}`).join(', ')}`);
     }
     return rows;
   }
 
-  // --- Try 2: HTML table (fallback when market open + SSR populates) ---
+  // Fallback: HTML table (market open-এ populated)
   console.log('⚠️ JSON empty → trying HTML table');
   const $ = cheerio.load(html);
   const rows = [];
@@ -210,13 +210,13 @@ async function getLatestBoard() {
 
     rows.push({
       symbol,
-      close:  num(2),
-      high:   num(3),
-      low:    num(4),
-      ycp:    num(6),
+      close: num(2),
+      high: num(3),
+      low: num(4),
+      ycp: num(6),
       change: num(7),
       trades: int(8),
-      value:  num(9),
+      value: num(9),
       volume: int(10),
     });
   });
@@ -226,35 +226,25 @@ async function getLatestBoard() {
 }
 
 // =========================================
-// ৩. Market status
+// Market status
 // =========================================
 async function getMarketStatus() {
   try {
     const { data: html } = await axios.get(`${BASE}/markets/latest-share-price`);
-
     const marketClosed = /Market\s+closed/i.test(html);
     const marketOpen = /Market\s+open/i.test(html);
-
-    // Dhaka date (UTC+6)
     const dhakaMs = Date.now() + 6 * 60 * 60 * 1000;
     const dateStr = new Date(dhakaMs).toISOString().split('T')[0];
-
-    return {
-      isMarketOpen: marketOpen && !marketClosed,
-      date: dateStr,
-    };
+    return { isMarketOpen: marketOpen && !marketClosed, date: dateStr };
   } catch (err) {
     console.error(`❌ Market status error: ${err.message}`);
     const dhakaMs = Date.now() + 6 * 60 * 60 * 1000;
-    return {
-      isMarketOpen: false,
-      date: new Date(dhakaMs).toISOString().split('T')[0],
-    };
+    return { isMarketOpen: false, date: new Date(dhakaMs).toISOString().split('T')[0] };
   }
 }
 
 // =========================================
-// ৪. Market Depth → Open/High/Low/YCP
+// Market depth (Open/High/Low/YCP)
 // =========================================
 async function getMarketDepth(symbol) {
   const encoded = encodeURIComponent(symbol);
@@ -295,7 +285,7 @@ async function getMarketDepth(symbol) {
 }
 
 // =========================================
-// ৫. Company page → Sector + Market Cap
+// Company page (Sector, Market Cap)
 // =========================================
 async function getCompanyDetails(symbol) {
   const encoded = encodeURIComponent(symbol);
@@ -308,10 +298,8 @@ async function getCompanyDetails(symbol) {
     marketCap: null,
     freeFloatMarketCap: null,
     open: null,
-    lastUpdate: null,
   };
 
-  // Key statistics box
   $('div').each((_, div) => {
     const $div = $(div);
     if ($div.children().first().text().trim() !== 'Key statistics') return;
@@ -329,11 +317,9 @@ async function getCompanyDetails(symbol) {
       if (/^Market cap$/i.test(label))                 out.marketCap = numFrom(valueText);
       else if (/^Free float market cap$/i.test(label)) out.freeFloatMarketCap = numFrom(valueText);
       else if (/^Opening price$/i.test(label))         out.open = numFrom(valueText);
-      else if (/^Last Update$/i.test(label))           out.lastUpdate = valueText;
     });
   });
 
-  // Sector badge
   $('span.inline-flex.items-center.rounded-full').each((_, el) => {
     const t = $(el).text().trim();
     if (!out.sector && t && !/^(DSE |HQ ·|Debt|Equity)/i.test(t)) {
@@ -345,7 +331,7 @@ async function getCompanyDetails(symbol) {
 }
 
 // =========================================
-// ৬. Per-symbol enrichment
+// Enrichment
 // =========================================
 async function enrichSymbol(row) {
   const result = {
@@ -362,7 +348,6 @@ async function enrichSymbol(row) {
     freeFloatMarketCap: null,
   };
 
-  // Market-depth: get open + fallback for high/low/ycp/volume/trades/value
   try {
     const depth = await getMarketDepth(row.symbol);
     result.open = depth.open ?? row.ycp ?? null;
@@ -379,7 +364,6 @@ async function enrichSymbol(row) {
 
   await sleep(PER_SYMBOL_DELAY_MS);
 
-  // Company: get sector + market cap
   try {
     const details = await getCompanyDetails(row.symbol);
     result.sector = details.sector;
@@ -396,23 +380,21 @@ async function enrichSymbol(row) {
 }
 
 // =========================================
-// ৭. Main
+// Main
 // =========================================
 async function fetchAndStoreStockData() {
   const startTime = Date.now();
   console.log('🚀 DSE scraper started');
 
-  // Market status + date
   const { isMarketOpen, date } = await getMarketStatus();
   console.log(`📅 Date: ${date} | Market open: ${isMarketOpen}`);
 
   if (!date) {
-    await sendTelegram('❌ Scraper aborted: no date.');
+    await sendTelegram('❌ No date.');
     await mongoose.connection.close();
     return;
   }
 
-  // Board
   const board = await getLatestBoard();
   if (!board.length) {
     await sendTelegram(`⚠️ Board empty.\n📅 ${date}`);
@@ -421,30 +403,26 @@ async function fetchAndStoreStockData() {
   }
 
   await sendTelegram(
-    `📦 DSE Scraper Start\n📅 Date: ${date}\n📊 Symbols: ${board.length}\n⏱️ Est: ~${Math.round(board.length * PER_SYMBOL_DELAY_MS / 1000 / 60)} min`
+    `📦 DSE Scraper Start\n📅 Date: ${date}\n📊 Symbols: ${board.length}`
   );
 
-  let success = 0;
-  let skipped = 0;
-  let failed = 0;
+  let success = 0, skipped = 0, failed = 0;
 
-  // Batch loop
   for (let b = 0; b < board.length; b += BATCH_SIZE) {
     const batch = board.slice(b, b + BATCH_SIZE);
-    const batchNum = Math.floor(b / BATCH_SIZE) + 1;
-    console.log(`\n🔄 Batch ${batchNum} (${batch.length} symbols)`);
+    console.log(`\n🔄 Batch ${Math.floor(b / BATCH_SIZE) + 1} (${batch.length} symbols)`);
 
     for (const row of batch) {
       try {
         const exists = await CandleData.findOne({ symbol: row.symbol, date });
         if (exists) {
-          console.log(`ℹ️  Skip (exists): ${row.symbol}`);
+          console.log(`ℹ️  Skip: ${row.symbol}`);
           skipped++;
           continue;
         }
 
         if (!row.close) {
-          console.warn(`⚠️  Skip (no LTP): ${row.symbol}`);
+          console.warn(`⚠️  No LTP: ${row.symbol}`);
           failed++;
           continue;
         }
@@ -454,18 +432,15 @@ async function fetchAndStoreStockData() {
         const candle = new CandleData({
           symbol: row.symbol,
           date,
-
           open:   extra.open,
           close:  row.close,
           high:   extra.high,
           low:    extra.low,
           ycp:    extra.ycp,
           change: row.change,
-
           volume: extra.volume,
           value:  extra.value,
           trades: extra.trades,
-
           sector:             extra.sector,
           marketCap:          extra.marketCap,
           freeFloatMarketCap: extra.freeFloatMarketCap,
@@ -473,9 +448,7 @@ async function fetchAndStoreStockData() {
 
         await candle.save();
         success++;
-        console.log(
-          `✅ ${row.symbol} | LTP=${row.close} | open=${extra.open ?? '-'} | sector=${extra.sector || '-'}`
-        );
+        console.log(`✅ ${row.symbol} | LTP=${row.close} | open=${extra.open ?? '-'} | sector=${extra.sector || '-'}`);
 
         await sleep(PER_SYMBOL_DELAY_MS);
       } catch (err) {
@@ -492,7 +465,7 @@ async function fetchAndStoreStockData() {
   }
 
   const elapsedSec = Math.round((Date.now() - startTime) / 1000);
-  const summary = `✅ DSE Scraper Done
+  const summary = `✅ DSE Done
 📅 Date: ${date}
 ✅ Success: ${success}
 ℹ️  Skipped: ${skipped}
@@ -505,11 +478,8 @@ async function fetchAndStoreStockData() {
   await mongoose.connection.close();
 }
 
-// =========================================
-// ৮. Run
-// =========================================
 fetchAndStoreStockData().catch(async (err) => {
-  console.error('💥 Fatal error:', err);
+  console.error('💥 Fatal:', err);
   await sendTelegram(`💥 Fatal: ${err.message}`);
   try { await mongoose.connection.close(); } catch (_) {}
   process.exit(1);

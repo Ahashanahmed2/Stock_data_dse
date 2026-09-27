@@ -51,7 +51,7 @@ jobs:
 
       - name: Run Scraper
         env:
-          MONGO_URI: ${{ secrets.MONGO_URL }}
+          MONGO_URI: ${{ secrets.MONGO_URl }}
           MONGODBEMAIL_URI: ${{ secrets.MONGO_URL }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}

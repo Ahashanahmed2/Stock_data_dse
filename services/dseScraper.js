@@ -1,7 +1,7 @@
-// services/dseScraper.js — v4.0.0
-// ✅ tickerInitial JSON → LTP (388 symbols)
-// ✅ market-depth → Open/High/Low/YCP/Volume/Trades/Value
-// ✅ company page → Sector/MarketCap/FreeFloatMarketCap
+// services/dseScraper.js — v5.0.0
+// ✅ tickerInitial JSON → LTP + change (388 symbols)
+// ✅ market-depth → Open/High/Low/Trades/Volume/Value + Last Trade Price → close
+// ✅ company page → Sector/MarketCap/FreeFloatMarketCap + Opening price fallback
 // ✅ 300ms delay + 50-symbol batches
 // ✅ MongoDB unique (symbol+date) upsert
 // ✅ Telegram start + summary
@@ -143,7 +143,7 @@ function parseTickerInitial(html) {
 }
 
 // =========================================
-// Latest Board
+// Latest Board — শুধু symbol (LTP + change এর জন্য)
 // =========================================
 async function getLatestBoard() {
   const url = `${BASE}/markets/latest-share-price`;
@@ -162,18 +162,16 @@ async function getLatestBoard() {
   const rows = [];
   for (const t of tickers) {
     const sym = (t.code || '').trim().toUpperCase();
-    const price = parseFloat(String(t.price).replace(/,/g, ''));
-    if (!sym || isNaN(price)) continue;
+    if (!sym) continue;
     rows.push({
       symbol: sym,
-      close: price,
       change: typeof t.change === 'number' ? t.change : null,
     });
   }
 
   console.log(`✅ Board: ${rows.length} symbols`);
   if (rows.length) {
-    console.log(`   Sample: ${rows.slice(0, 3).map(r => `${r.symbol}=${r.close}`).join(', ')}`);
+    console.log(`   Sample: ${rows.slice(0, 3).map(r => r.symbol).join(', ')}`);
   }
   return rows;
 }
@@ -197,7 +195,7 @@ async function getMarketStatus() {
 }
 
 // =========================================
-// Market Depth → Open/High/Low/YCP/Volume/Trades/Value
+// Market Depth → Open/High/Low/Trades/Volume/Value + Last Trade Price → close
 // =========================================
 async function getMarketDepth(symbol) {
   const encoded = encodeURIComponent(symbol);
@@ -207,7 +205,7 @@ async function getMarketDepth(symbol) {
 
   const stats = {};
 
-  // Strategy 1: "Price Statistics" heading-এর parent থেকে flex rows নিই
+  // Strategy 1: "Price Statistics" heading-এর parent থেকে flex rows
   $('div').each((_, div) => {
     const $div = $(div);
     const firstChildText = $div.children().first().text().trim();
@@ -224,7 +222,7 @@ async function getMarketDepth(symbol) {
     });
   });
 
-  // Strategy 2 fallback: known labels দিয়ে সব rows খুঁজি
+  // Strategy 2 fallback: known labels
   if (Object.keys(stats).length === 0) {
     const KNOWN = [
       'Open Price', "Day's High", 'Last Trade Price', "Day's Low",
@@ -255,11 +253,9 @@ async function getMarketDepth(symbol) {
 
   return {
     open:   num('Open Price'),
+    close:  num('Last Trade Price'),   // ⚡ Last Trade Price → close
     high:   num("Day's High"),
     low:    num("Day's Low"),
-    ltp:    num('Last Trade Price'),
-    ycp:    num('Yesterday Close Price'),
-    closep: num('Close Price'),
     trades: int('No. of Trade'),
     volume: int('Total Volume'),
     value:  num('Total Value (mn)'),
@@ -267,7 +263,7 @@ async function getMarketDepth(symbol) {
 }
 
 // =========================================
-// Company → Sector / MarketCap / FreeFloat
+// Company → Sector / MarketCap / FreeFloat / Opening price fallback
 // =========================================
 async function getCompanyDetails(symbol) {
   const encoded = encodeURIComponent(symbol);
@@ -341,12 +337,11 @@ async function getCompanyDetails(symbol) {
 async function enrichSymbol(row) {
   const result = {
     open: null,
+    close: null,
     high: null,
     low: null,
-    ycp: null,
-    closep: null,
-    volume: null,
     trades: null,
+    volume: null,
     value: null,
     sector: null,
     marketCap: null,
@@ -357,12 +352,11 @@ async function enrichSymbol(row) {
   try {
     const depth = await getMarketDepth(row.symbol);
     result.open = depth.open;
+    result.close = depth.close;      // Last Trade Price → close
     result.high = depth.high;
     result.low = depth.low;
-    result.ycp = depth.ycp;
-    result.closep = depth.closep;
-    result.volume = depth.volume;
     result.trades = depth.trades;
+    result.volume = depth.volume;
     result.value = depth.value;
   } catch (e) {
     console.warn(`⚠️ market-depth ${row.symbol}: ${e.message}`);
@@ -370,7 +364,7 @@ async function enrichSymbol(row) {
 
   await sleep(PER_SYMBOL_DELAY_MS);
 
-  // Step 2: company page
+  // Step 2: company page (sector + marketCap + freeFloat + open fallback)
   try {
     const details = await getCompanyDetails(row.symbol);
     result.sector = details.sector;
@@ -381,11 +375,6 @@ async function enrichSymbol(row) {
     }
   } catch (e) {
     console.warn(`⚠️ company ${row.symbol}: ${e.message}`);
-  }
-
-  // Fallback: YCP → Open
-  if (result.open == null && result.ycp != null) {
-    result.open = result.ycp;
   }
 
   return result;
@@ -434,23 +423,22 @@ async function fetchAndStoreStockData() {
           continue;
         }
 
-        if (!row.close) {
-          console.warn(`⚠️  No LTP: ${row.symbol}`);
+        const extra = await enrichSymbol(row);
+
+        if (!extra.close) {
+          console.warn(`⚠️  No close: ${row.symbol}`);
           failed++;
           continue;
         }
-
-        const extra = await enrichSymbol(row);
 
         const candle = new CandleData({
           symbol: row.symbol,
           date,
 
           open:   extra.open,
-          close:  row.close,
+          close:  extra.close,
           high:   extra.high,
           low:    extra.low,
-          ycp:    extra.ycp,
           change: row.change,
 
           volume: extra.volume,
@@ -465,7 +453,7 @@ async function fetchAndStoreStockData() {
         await candle.save();
         success++;
         console.log(
-          `✅ ${row.symbol} | LTP=${row.close} | open=${extra.open ?? '-'} | high=${extra.high ?? '-'} | vol=${extra.volume ?? '-'} | sector=${extra.sector || '-'}`
+          `✅ ${row.symbol} | close=${extra.close} | open=${extra.open ?? '-'} | high=${extra.high ?? '-'} | low=${extra.low ?? '-'} | vol=${extra.volume ?? '-'} | trades=${extra.trades ?? '-'}`
         );
 
         await sleep(PER_SYMBOL_DELAY_MS);

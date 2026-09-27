@@ -1,9 +1,10 @@
-// services/dseScraper.js — v5.0.0
-// ✅ tickerInitial JSON → LTP + change (388 symbols)
-// ✅ market-depth → Open/High/Low/Trades/Volume/Value + Last Trade Price → close
-// ✅ company page → Sector/MarketCap/FreeFloatMarketCap + Opening price fallback
+// services/dseScraper.js — v6.0.0
+// ✅ tickerInitial JSON → LTP + change (main board ~388)
+// ✅ market-depth → Open/High/Low/Trades/Volume/Value + Last Trade Price
+// ✅ company page → Sector/MarketCap/FreeFloatMarketCap
+// ✅ close fallback: market-depth → tickerInitial LTP
 // ✅ 300ms delay + 50-symbol batches
-// ✅ MongoDB unique (symbol+date) upsert
+// ✅ MongoDB upsert (symbol+date unique)
 // ✅ Telegram start + summary
 
 const axios = require('axios');
@@ -34,12 +35,16 @@ axios.defaults.headers.common['Accept-Language'] = 'en-US,en;q=0.9';
 axios.defaults.headers.common['Cache-Control'] = 'no-cache';
 
 // =========================================
-// MongoDB
+// MongoDB connect (awaited in main)
 // =========================================
-mongoose.connect(process.env.MONGO_URI, {
-  serverSelectionTimeoutMS: 5000,
-  socketTimeoutMS: 45000,
-});
+async function connectMongo() {
+  if (mongoose.connection.readyState === 1) return;
+  await mongoose.connect(process.env.MONGO_URI, {
+    serverSelectionTimeoutMS: 5000,
+    socketTimeoutMS: 45000,
+  });
+  console.log('✅ MongoDB connected:', mongoose.connection.name);
+}
 
 // =========================================
 // Config
@@ -143,7 +148,7 @@ function parseTickerInitial(html) {
 }
 
 // =========================================
-// Latest Board — শুধু symbol (LTP + change এর জন্য)
+// Latest Board — LTP (close fallback) + change
 // =========================================
 async function getLatestBoard() {
   const url = `${BASE}/markets/latest-share-price`;
@@ -163,15 +168,17 @@ async function getLatestBoard() {
   for (const t of tickers) {
     const sym = (t.code || '').trim().toUpperCase();
     if (!sym) continue;
+    const price = parseFloat(String(t.price).replace(/,/g, ''));
     rows.push({
       symbol: sym,
+      ltp:    isNaN(price) ? null : price,   // ⚡ close fallback
       change: typeof t.change === 'number' ? t.change : null,
     });
   }
 
   console.log(`✅ Board: ${rows.length} symbols`);
   if (rows.length) {
-    console.log(`   Sample: ${rows.slice(0, 3).map(r => r.symbol).join(', ')}`);
+    console.log(`   Sample: ${rows.slice(0, 3).map(r => `${r.symbol}=${r.ltp}`).join(', ')}`);
   }
   return rows;
 }
@@ -195,7 +202,7 @@ async function getMarketStatus() {
 }
 
 // =========================================
-// Market Depth → Open/High/Low/Trades/Volume/Value + Last Trade Price → close
+// Market Depth
 // =========================================
 async function getMarketDepth(symbol) {
   const encoded = encodeURIComponent(symbol);
@@ -253,7 +260,7 @@ async function getMarketDepth(symbol) {
 
   return {
     open:   num('Open Price'),
-    close:  num('Last Trade Price'),   // ⚡ Last Trade Price → close
+    close:  num('Last Trade Price'),   // priority for close
     high:   num("Day's High"),
     low:    num("Day's Low"),
     trades: int('No. of Trade'),
@@ -263,7 +270,7 @@ async function getMarketDepth(symbol) {
 }
 
 // =========================================
-// Company → Sector / MarketCap / FreeFloat / Opening price fallback
+// Company Details
 // =========================================
 async function getCompanyDetails(symbol) {
   const encoded = encodeURIComponent(symbol);
@@ -278,7 +285,6 @@ async function getCompanyDetails(symbol) {
     open: null,
   };
 
-  // Key statistics cards
   $('div.p-3.rounded-xl').each((_, card) => {
     const $card = $(card);
     const label = $card.find('div').first().text().trim();
@@ -348,11 +354,19 @@ async function enrichSymbol(row) {
     freeFloatMarketCap: null,
   };
 
+  // ⚡ Step 0: tickerInitial LTP → default close
+  result.close = row.ltp;
+
   // Step 1: market-depth
   try {
     const depth = await getMarketDepth(row.symbol);
     result.open = depth.open;
-    result.close = depth.close;      // Last Trade Price → close
+
+    // market-depth-এ Last Trade Price পেলে priority
+    if (depth.close != null && depth.close > 0) {
+      result.close = depth.close;
+    }
+
     result.high = depth.high;
     result.low = depth.low;
     result.trades = depth.trades;
@@ -364,7 +378,7 @@ async function enrichSymbol(row) {
 
   await sleep(PER_SYMBOL_DELAY_MS);
 
-  // Step 2: company page (sector + marketCap + freeFloat + open fallback)
+  // Step 2: company page
   try {
     const details = await getCompanyDetails(row.symbol);
     result.sector = details.sector;
@@ -387,6 +401,14 @@ async function fetchAndStoreStockData() {
   const startTime = Date.now();
   console.log('🚀 DSE scraper started');
 
+  try {
+    await connectMongo();
+  } catch (e) {
+    console.error('❌ MongoDB connect failed:', e.message);
+    await sendTelegram(`❌ MongoDB connect failed: ${e.message}`);
+    process.exit(1);
+  }
+
   const { isMarketOpen, date } = await getMarketStatus();
   console.log(`📅 Date: ${date} | Market open: ${isMarketOpen}`);
 
@@ -407,7 +429,7 @@ async function fetchAndStoreStockData() {
     `📦 DSE Scraper Start\n📅 Date: ${date}\n📊 Symbols: ${board.length}`
   );
 
-  let success = 0, skipped = 0, failed = 0;
+  let inserted = 0, updated = 0, skipped = 0, failed = 0;
 
   for (let b = 0; b < board.length; b += BATCH_SIZE) {
     const batch = board.slice(b, b + BATCH_SIZE);
@@ -416,45 +438,50 @@ async function fetchAndStoreStockData() {
 
     for (const row of batch) {
       try {
-        const exists = await CandleData.findOne({ symbol: row.symbol, date });
-        if (exists) {
-          console.log(`ℹ️  Skip: ${row.symbol}`);
-          skipped++;
-          continue;
-        }
-
         const extra = await enrichSymbol(row);
 
         if (!extra.close) {
-          console.warn(`⚠️  No close: ${row.symbol}`);
+          console.warn(`⚠️  No close at all: ${row.symbol}`);
           failed++;
+          await sleep(PER_SYMBOL_DELAY_MS);
           continue;
         }
 
-        const candle = new CandleData({
+        const doc = {
           symbol: row.symbol,
           date,
-
           open:   extra.open,
           close:  extra.close,
           high:   extra.high,
           low:    extra.low,
           change: row.change,
-
           volume: extra.volume,
           value:  extra.value,
           trades: extra.trades,
-
           sector:             extra.sector,
           marketCap:          extra.marketCap,
           freeFloatMarketCap: extra.freeFloatMarketCap,
-        });
+          savedAt: new Date(),
+        };
 
-        await candle.save();
-        success++;
-        console.log(
-          `✅ ${row.symbol} | close=${extra.close} | open=${extra.open ?? '-'} | high=${extra.high ?? '-'} | low=${extra.low ?? '-'} | vol=${extra.volume ?? '-'} | trades=${extra.trades ?? '-'}`
+        const res = await CandleData.updateOne(
+          { symbol: row.symbol, date },
+          { $set: doc },
+          { upsert: true }
         );
+
+        if (res.upsertedCount > 0) {
+          inserted++;
+          console.log(
+            `✅ INSERT ${row.symbol} | close=${extra.close} | open=${extra.open ?? '-'} | high=${extra.high ?? '-'} | low=${extra.low ?? '-'} | vol=${extra.volume ?? '-'}`
+          );
+        } else if (res.modifiedCount > 0) {
+          updated++;
+          console.log(`🔄 UPDATE ${row.symbol} | close=${extra.close}`);
+        } else {
+          skipped++;
+          console.log(`ℹ️  No change ${row.symbol}`);
+        }
 
         await sleep(PER_SYMBOL_DELAY_MS);
       } catch (err) {
@@ -473,10 +500,12 @@ async function fetchAndStoreStockData() {
   const elapsedSec = Math.round((Date.now() - startTime) / 1000);
   const summary = `✅ DSE Done
 📅 Date: ${date}
-✅ Success: ${success}
-ℹ️  Skipped: ${skipped}
-❌ Failed:  ${failed}
-⏱️ Time: ${elapsedSec}s`;
+✅ Inserted: ${inserted}
+🔄 Updated:  ${updated}
+ℹ️  Skipped:  ${skipped}
+❌ Failed:   ${failed}
+⏱️ Total:   ${board.length}
+⏱️ Time:    ${elapsedSec}s`;
 
   console.log(summary);
   await sendTelegram(summary);

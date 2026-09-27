@@ -5,7 +5,8 @@
   "main": "server.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node server.js"
+    "start": "node server.js",
+    "scrape": "node services/dseScraper.js"
   },
   "keywords": [],
   "author": "",
@@ -16,6 +17,7 @@
     "cheerio": "^1.0.0",
     "dotenv": "^16.5.0",
     "mongoose": "^8.14.1",
-    "node-cron": "^3.0.3"
+    "node-cron": "^3.0.3",
+    "puppeteer": "^23.11.1"
   }
 }

@@ -1,12 +1,11 @@
-// services/dseScraper.js — v6.0.0
-// ✅ tickerInitial JSON → LTP + change (main board ~388)
-// ✅ market-depth → Open/High/Low/Trades/Volume/Value + Last Trade Price
-// ✅ company page → Sector/MarketCap/FreeFloatMarketCap
-// ✅ close fallback: market-depth → tickerInitial LTP
+// services/dseScraper.js — v7.0.0
+// ✅ Puppeteer দিয়ে JS-render করে HIGH/LOW/YCP/TRADE/VALUE/VOLUME আনি
+// ✅ company page → Sector/MarketCap/FreeFloat
 // ✅ 300ms delay + 50-symbol batches
 // ✅ MongoDB upsert (symbol+date unique)
 // ✅ Telegram start + summary
 
+const puppeteer = require('puppeteer');
 const axios = require('axios');
 const cheerio = require('cheerio');
 const mongoose = require('mongoose');
@@ -35,7 +34,7 @@ axios.defaults.headers.common['Accept-Language'] = 'en-US,en;q=0.9';
 axios.defaults.headers.common['Cache-Control'] = 'no-cache';
 
 // =========================================
-// MongoDB connect (awaited in main)
+// MongoDB
 // =========================================
 async function connectMongo() {
   if (mongoose.connection.readyState === 1) return;
@@ -75,116 +74,107 @@ async function sendTelegram(text) {
 }
 
 // =========================================
-// Parse tickerInitial JSON
+// Puppeteer দিয়ে full board আনি
 // =========================================
-function parseTickerInitial(html) {
-  const idx = html.search(/tickerInitial/);
-  if (idx === -1) {
-    console.log('❌ tickerInitial not found');
-    return null;
-  }
+async function getLatestBoardWithJS() {
+  console.log('🌐 Launching Puppeteer...');
 
-  const bracketStart = html.indexOf('[', idx);
-  if (bracketStart === -1 || bracketStart > idx + 200) {
-    console.log('❌ no "[" near tickerInitial');
-    return null;
-  }
+  const browser = await puppeteer.launch({
+    headless: 'new',
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--no-first-run',
+      '--no-zygote',
+      '--single-process',
+    ],
+  });
 
-  let depth = 0, bracketEnd = -1, inString = false, escapeNext = false;
-  for (let i = bracketStart; i < Math.min(html.length, bracketStart + 500000); i++) {
-    const c = html[i];
-    if (escapeNext) { escapeNext = false; continue; }
-    if (c === '\\') { escapeNext = true; continue; }
-    if (c === '"') { inString = !inString; continue; }
-    if (inString) continue;
-    if (c === '[') depth++;
-    else if (c === ']') {
-      depth--;
-      if (depth === 0) { bracketEnd = i; break; }
-    }
-  }
+  const page = await browser.newPage();
+  await page.setUserAgent(
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+    '(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+  );
+  await page.setViewport({ width: 1920, height: 1080 });
 
-  if (bracketEnd === -1) {
-    console.log('❌ no matching "]"');
-    return null;
-  }
+  page.on('console', (msg) => {
+    if (msg.type() === 'error') console.warn('⚠️ page console:', msg.text());
+  });
 
-  const raw = html.substring(bracketStart, bracketEnd + 1);
-  console.log(`📦 Raw tickerInitial: ${raw.length} bytes`);
-
-  let tickers = null;
-  try {
-    tickers = JSON.parse(raw);
-    console.log(`✅ Direct JSON: ${tickers.length} entries`);
-  } catch (e) {
-    console.log(`   direct failed: ${e.message}`);
-  }
-
-  if (!tickers) {
-    try {
-      const cleaned = raw.replace(/\\"/g, '"').replace(/\\\\/g, '\\');
-      tickers = JSON.parse(cleaned);
-      console.log(`✅ After unescape: ${tickers.length} entries`);
-    } catch (e) {
-      console.log(`   unescape failed: ${e.message}`);
-    }
-  }
-
-  if (!tickers) {
-    try {
-      tickers = [];
-      const pattern = /code\\?"\s*:\s*\\?"([A-Z0-9&._()\-]+)\\?"\s*,\s*\\?"price\\?"\s*:\s*\\?"([\d.,]+)\\?"/g;
-      let m;
-      while ((m = pattern.exec(raw)) !== null) {
-        tickers.push({ code: m[1], price: m[2], change: 0, delta: 0 });
-      }
-      console.log(`✅ Regex fallback: ${tickers.length} entries`);
-    } catch (e) {
-      console.log(`   regex failed: ${e.message}`);
-    }
-  }
-
-  return tickers && tickers.length ? tickers : null;
-}
-
-// =========================================
-// Latest Board — LTP (close fallback) + change
-// =========================================
-async function getLatestBoard() {
   const url = `${BASE}/markets/latest-share-price`;
-  console.log(`🌐 Fetching board: ${url}`);
+  console.log(`🌐 Navigating: ${url}`);
 
-  const { data: html, status } = await axios.get(url);
-  console.log(`📄 HTTP ${status}, length=${html.length}`);
-  console.log(`📄 Has "tickerInitial": ${html.includes('tickerInitial')}`);
+  await page.goto(url, {
+    waitUntil: 'networkidle2',
+    timeout: 90000,
+  });
 
-  const tickers = parseTickerInitial(html);
-  if (!tickers || !tickers.length) {
-    console.log('❌ No tickerInitial data');
-    return [];
+  // Wait for real table rows
+  try {
+    await page.waitForFunction(
+      () => {
+        const rows = document.querySelectorAll('table tbody tr');
+        return rows.length > 50;
+      },
+      { timeout: 45000 }
+    );
+    console.log('✅ Table populated');
+  } catch (e) {
+    console.warn('⚠️ Timeout waiting for table rows:', e.message);
+    const content = await page.content();
+    console.log('📄 Page length:', content.length);
+    console.log('📄 Has <table>:', content.includes('<table'));
+    console.log('📄 Has TRADING CODE:', content.includes('TRADING CODE'));
   }
 
-  const rows = [];
-  for (const t of tickers) {
-    const sym = (t.code || '').trim().toUpperCase();
-    if (!sym) continue;
-    const price = parseFloat(String(t.price).replace(/,/g, ''));
-    rows.push({
-      symbol: sym,
-      ltp:    isNaN(price) ? null : price,   // ⚡ close fallback
-      change: typeof t.change === 'number' ? t.change : null,
+  await sleep(3000);
+
+  const rows = await page.evaluate(() => {
+    const out = [];
+    document.querySelectorAll('table tbody tr').forEach((tr) => {
+      const tds = tr.querySelectorAll('td');
+      if (tds.length < 11) return;
+
+      const symbol = tds[1].textContent.trim().toUpperCase();
+      if (!symbol || symbol.length < 2) return;
+
+      const num = (i) => {
+        const t = tds[i]?.textContent.trim().replace(/,/g, '');
+        if (!t || t === '—' || t === '-') return null;
+        const v = parseFloat(t);
+        return isNaN(v) ? null : v;
+      };
+
+      out.push({
+        symbol,
+        close:  num(2),   // LTP*
+        high:   num(3),   // HIGH
+        low:    num(4),   // LOW
+        closep: num(5),   // CLOSEP*
+        ycp:    num(6),   // YCP*
+        change: num(7),   // CHANGE
+        trades: num(8),   // TRADE
+        value:  num(9),   // VALUE (mn)
+        volume: num(10),  // VOLUME
+      });
     });
+    return out;
+  });
+
+  await browser.close();
+  console.log(`✅ Board (Puppeteer): ${rows.length} symbols`);
+
+  if (rows.length > 0) {
+    console.log('   Sample:', JSON.stringify(rows.slice(0, 2), null, 2));
   }
 
-  console.log(`✅ Board: ${rows.length} symbols`);
-  if (rows.length) {
-    console.log(`   Sample: ${rows.slice(0, 3).map(r => `${r.symbol}=${r.ltp}`).join(', ')}`);
-  }
   return rows;
 }
 
 // =========================================
-// Market Status
+// Market Status (date শুধু)
 // =========================================
 async function getMarketStatus() {
   try {
@@ -199,74 +189,6 @@ async function getMarketStatus() {
     const dhakaMs = Date.now() + 6 * 60 * 60 * 1000;
     return { isMarketOpen: false, date: new Date(dhakaMs).toISOString().split('T')[0] };
   }
-}
-
-// =========================================
-// Market Depth
-// =========================================
-async function getMarketDepth(symbol) {
-  const encoded = encodeURIComponent(symbol);
-  const url = `${BASE}/market-depth?instrument=${encoded}`;
-  const { data: html } = await axios.get(url);
-  const $ = cheerio.load(html);
-
-  const stats = {};
-
-  // Strategy 1: "Price Statistics" heading-এর parent থেকে flex rows
-  $('div').each((_, div) => {
-    const $div = $(div);
-    const firstChildText = $div.children().first().text().trim();
-    if (firstChildText !== 'Price Statistics') return;
-
-    const $container = $div.parent();
-    $container.find('div.flex.items-center.justify-between').each((_, row) => {
-      const $row = $(row);
-      const spans = $row.find('span');
-      if (spans.length < 2) return;
-      const label = $(spans[0]).text().trim();
-      const value = $(spans[spans.length - 1]).text().trim();
-      if (label && value) stats[label] = value;
-    });
-  });
-
-  // Strategy 2 fallback: known labels
-  if (Object.keys(stats).length === 0) {
-    const KNOWN = [
-      'Open Price', "Day's High", 'Last Trade Price', "Day's Low",
-      'Yesterday Close Price', 'No. of Trade', 'Close Price',
-      'Total Volume', 'Total Value (mn)'
-    ];
-    $('div.flex.items-center.justify-between').each((_, row) => {
-      const $row = $(row);
-      const spans = $row.find('span');
-      if (spans.length < 2) return;
-      const label = $(spans[0]).text().trim();
-      const value = $(spans[spans.length - 1]).text().trim();
-      if (KNOWN.includes(label)) stats[label] = value;
-    });
-  }
-
-  const num = (key) => {
-    const raw = (stats[key] || '').trim();
-    if (!raw || raw === '—' || raw === '-' || raw === 'N/A') return null;
-    const n = parseFloat(raw.replace(/,/g, ''));
-    return isNaN(n) ? null : n;
-  };
-
-  const int = (key) => {
-    const v = num(key);
-    return v === null ? null : Math.round(v);
-  };
-
-  return {
-    open:   num('Open Price'),
-    close:  num('Last Trade Price'),   // priority for close
-    high:   num("Day's High"),
-    low:    num("Day's Low"),
-    trades: int('No. of Trade'),
-    volume: int('Total Volume'),
-    value:  num('Total Value (mn)'),
-  };
 }
 
 // =========================================
@@ -338,68 +260,11 @@ async function getCompanyDetails(symbol) {
 }
 
 // =========================================
-// Enrich one symbol
-// =========================================
-async function enrichSymbol(row) {
-  const result = {
-    open: null,
-    close: null,
-    high: null,
-    low: null,
-    trades: null,
-    volume: null,
-    value: null,
-    sector: null,
-    marketCap: null,
-    freeFloatMarketCap: null,
-  };
-
-  // ⚡ Step 0: tickerInitial LTP → default close
-  result.close = row.ltp;
-
-  // Step 1: market-depth
-  try {
-    const depth = await getMarketDepth(row.symbol);
-    result.open = depth.open;
-
-    // market-depth-এ Last Trade Price পেলে priority
-    if (depth.close != null && depth.close > 0) {
-      result.close = depth.close;
-    }
-
-    result.high = depth.high;
-    result.low = depth.low;
-    result.trades = depth.trades;
-    result.volume = depth.volume;
-    result.value = depth.value;
-  } catch (e) {
-    console.warn(`⚠️ market-depth ${row.symbol}: ${e.message}`);
-  }
-
-  await sleep(PER_SYMBOL_DELAY_MS);
-
-  // Step 2: company page
-  try {
-    const details = await getCompanyDetails(row.symbol);
-    result.sector = details.sector;
-    result.marketCap = details.marketCap;
-    result.freeFloatMarketCap = details.freeFloatMarketCap;
-    if (result.open == null && details.open != null) {
-      result.open = details.open;
-    }
-  } catch (e) {
-    console.warn(`⚠️ company ${row.symbol}: ${e.message}`);
-  }
-
-  return result;
-}
-
-// =========================================
 // Main
 // =========================================
 async function fetchAndStoreStockData() {
   const startTime = Date.now();
-  console.log('🚀 DSE scraper started');
+  console.log('🚀 DSE scraper started (Puppeteer mode)');
 
   try {
     await connectMongo();
@@ -409,8 +274,8 @@ async function fetchAndStoreStockData() {
     process.exit(1);
   }
 
-  const { isMarketOpen, date } = await getMarketStatus();
-  console.log(`📅 Date: ${date} | Market open: ${isMarketOpen}`);
+  const { date } = await getMarketStatus();
+  console.log(`📅 Date: ${date}`);
 
   if (!date) {
     await sendTelegram('❌ No date.');
@@ -418,7 +283,17 @@ async function fetchAndStoreStockData() {
     return;
   }
 
-  const board = await getLatestBoard();
+  // Puppeteer দিয়ে board আনি
+  let board = [];
+  try {
+    board = await getLatestBoardWithJS();
+  } catch (e) {
+    console.error('❌ Puppeteer failed:', e.message);
+    await sendTelegram(`❌ Puppeteer failed: ${e.message}`);
+    await mongoose.connection.close();
+    process.exit(1);
+  }
+
   if (!board.length) {
     await sendTelegram(`⚠️ Board empty.\n📅 ${date}`);
     await mongoose.connection.close();
@@ -438,29 +313,36 @@ async function fetchAndStoreStockData() {
 
     for (const row of batch) {
       try {
-        const extra = await enrichSymbol(row);
-
-        if (!extra.close) {
-          console.warn(`⚠️  No close at all: ${row.symbol}`);
-          failed++;
-          await sleep(PER_SYMBOL_DELAY_MS);
-          continue;
+        // Company page → sector + marketCap + freeFloat + open fallback
+        let details = {};
+        try {
+          details = await getCompanyDetails(row.symbol);
+        } catch (e) {
+          console.warn(`⚠️ company ${row.symbol}: ${e.message}`);
         }
 
         const doc = {
           symbol: row.symbol,
           date,
-          open:   extra.open,
-          close:  extra.close,
-          high:   extra.high,
-          low:    extra.low,
+
+          // Price
+          open:   details.open != null ? details.open : row.ycp,
+          close:  row.close,                // LTP* from HTML table
+          high:   row.high,
+          low:    row.low,
+          ycp:    row.ycp,
           change: row.change,
-          volume: extra.volume,
-          value:  extra.value,
-          trades: extra.trades,
-          sector:             extra.sector,
-          marketCap:          extra.marketCap,
-          freeFloatMarketCap: extra.freeFloatMarketCap,
+
+          // Volume / value
+          volume: row.volume,
+          value:  row.value,
+          trades: row.trades,
+
+          // Company
+          sector:             details.sector,
+          marketCap:          details.marketCap,
+          freeFloatMarketCap: details.freeFloatMarketCap,
+
           savedAt: new Date(),
         };
 
@@ -473,11 +355,11 @@ async function fetchAndStoreStockData() {
         if (res.upsertedCount > 0) {
           inserted++;
           console.log(
-            `✅ INSERT ${row.symbol} | close=${extra.close} | open=${extra.open ?? '-'} | high=${extra.high ?? '-'} | low=${extra.low ?? '-'} | vol=${extra.volume ?? '-'}`
+            `✅ INSERT ${row.symbol} | close=${row.close} | H=${row.high ?? '-'} | L=${row.low ?? '-'} | V=${row.volume ?? '-'} | trades=${row.trades ?? '-'} | sector=${details.sector || '-'}`
           );
         } else if (res.modifiedCount > 0) {
           updated++;
-          console.log(`🔄 UPDATE ${row.symbol} | close=${extra.close}`);
+          console.log(`🔄 UPDATE ${row.symbol}`);
         } else {
           skipped++;
           console.log(`ℹ️  No change ${row.symbol}`);

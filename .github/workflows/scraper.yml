@@ -4,7 +4,7 @@ on:
   schedule:
     # Dhaka time 14:30 (market close 14:20 এর পরে) = UTC 08:30
     # Sunday–Thursday (DSE working days)
-    - cron: '30 8 * * 0-4'
+    - cron: '30 8 * * 0-4,6'
   workflow_dispatch:  # ম্যানুয়ালি চালাতে পারবে
 
 jobs:

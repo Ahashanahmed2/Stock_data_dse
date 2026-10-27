@@ -274,14 +274,8 @@ async function fetchAndStoreStockData() {
     process.exit(1);
   }
 
-  const { isMarketOpen, date } = await getMarketStatus();
-
-  if (!isMarketOpen) {
-    console.log(`⏸️ Market closed on ${date}. Skipping scrape.`);
-    await sendTelegram(`⏸️ Market closed — skipped\n📅 ${date}`);
-    await mongoose.connection.close();
-    return;
-  }
+  const { date } = await getMarketStatus();
+  console.log(`📅 Date: ${date}`);
 
   if (!date) {
     await sendTelegram('❌ No date.');
